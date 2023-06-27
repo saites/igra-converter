@@ -4,10 +4,13 @@ use std::fmt::{Display, Formatter};
 use std::io;
 use std::io::{BufReader};
 use std::fs::File;
+use std::iter::zip;
+use eddie::DamerauLevenshtein;
+use itertools::Itertools;
 
 use log;
 
-use crate::xbase::{DBaseTable, Decimal, FieldDescriptor, Field, DBaseResult};
+use crate::xbase::{DBaseTable, Decimal, FieldDescriptor, Field, DBaseResult, TableReader, Header};
 
 fn main() -> DBaseResult<()> {
     env_logger::init();
@@ -19,11 +22,31 @@ fn main() -> DBaseResult<()> {
      */
 
     let personnel_path = "/media/mnt/raid/projects/IGRA/old-data-management/shared/PERSONEL.DBF";
+    let dbt = xbase::try_from_path(personnel_path)?;
 
-    let file = File::open(personnel_path)?;
-    let mut reader = BufReader::new(file);
-    let table = DBaseTable::try_from(&mut reader)?;
-    print_master_list(&table, &mut reader)?;
+    let mut people = read_personnel(dbt)?;
+    let damlev = DamerauLevenshtein::new();
+    println!("{}", people.len());
+
+    let mut compared: Vec<(usize, &PersonRecord, &PersonRecord)> = people.iter()
+        .take(500)
+        .tuple_combinations()
+        .map(|(p0, p1)| {
+            let sim = (
+                damlev.distance(&p0.first_name, &p1.first_name)
+                    + damlev.distance(&p0.last_name, &p1.last_name)
+            );
+            (sim, p0, p1)
+        }
+    ).sorted_unstable_by(
+        |a, b| (a.0).cmp(&b.0)
+    ).collect();
+
+    for (sim, p0, p1) in compared.iter().take(100) {
+        println!("{:15} {:<20} | {:15} {:<20} | {}",
+                 p0.first_name, p0.last_name, p1.first_name, p1.last_name,
+                 sim)
+    }
 
     Ok(())
 }
@@ -127,22 +150,16 @@ impl Display for LegalLast {
     }
 }
 
-fn print_master_list(table: &DBaseTable, reader: impl io::Read) -> DBaseResult<()> {
-    let mut people = Vec::<PersonRecord>::with_capacity(table.n_records);
+fn read_personnel<R: io::Read>(table: TableReader<Header<R>>) -> DBaseResult<Vec::<PersonRecord>> {
+    let mut people = Vec::<PersonRecord>::with_capacity(table.n_records());
+    let mut records = table.records();
 
-    for record in table.records(reader) {
-        if let Err(err) = record {
-            return Err(err);
-        }
+    while let Some(record) = records.next() {
+        let record = record?;
 
-        let record = record.unwrap();
         let mut person = PersonRecord::default();
         for field in record {
-            if let Err(err) = field {
-                return Err(err);
-            }
-
-            let field = field.unwrap();
+            let field = field?;
             match (field.name, field.value) {
                 ("IGRA_NUM", Field::Character(s)) => person.igra_number = s,
                 ("STATE_ASSN", Field::Character(s)) => person.association = s,
@@ -174,11 +191,7 @@ fn print_master_list(table: &DBaseTable, reader: impl io::Read) -> DBaseResult<(
     }
 
     people.sort_by(|a, b| a.igra_number.cmp(&b.igra_number));
-    for person in people {
-        println!("{person}")
-    }
-
-    Ok(())
+    Ok(people)
 }
 
 fn read_rodeo_events(mmapped: &[u8], fields: &Vec<FieldDescriptor>) {

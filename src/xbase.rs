@@ -1,14 +1,15 @@
 use std::fmt::{Display, Formatter};
 use std::fs::File;
 use std::io;
+use std::io::BufReader;
 use std::num::{ParseFloatError, ParseIntError};
+use std::path::Path;
 use std::str::FromStr;
 
 use log;
 
 use binary_layout::prelude::*;
 use chrono::{NaiveDate};
-use memmap2::Mmap;
 use thiserror::Error;
 use crate::xbase::DBaseErrorKind::{InvalidLastUpdated, UnknownFieldType, UnknownLogicalValue};
 
@@ -281,61 +282,41 @@ pub struct DBaseTable {
     pub n_records: usize,
 }
 
-trait TableReaderState {}
+pub trait TableReaderState {}
 
-struct StartRead<R> {
+pub struct Header<R> {
     inner: R,
 }
 
-struct TableHeader;
-struct Records;
-
-impl <R> TableReaderState for StartRead<R> {}
-impl TableReaderState for TableHeader {}
-impl TableReaderState for Records {}
+impl<R> TableReaderState for Header<R> {}
+impl<R: io::Read> TableReaderState for Records<R> {}
 
 
-pub struct DBaseTableReader<S: TableReaderState> {
+pub struct TableReader<S: TableReaderState> {
     table: Box<DBaseTable>,
     state: S,
 }
 
-impl <R> DBaseTableReader<StartRead<R>>
-    where R: io::Read
-{
-    pub fn new(inner: R) -> Self {
-        let table = DBaseTable{
-            last_updated: NaiveDate::default(),
-            flags: 0,
-            fields: Vec::new(),
-            n_records: 0,
-        };
-
-        DBaseTableReader{
-            table: Box::new(table),
-            state: StartRead {
-                inner
-            }
-        }
-    }
-
-
+pub fn try_from_path<P: AsRef<Path>>(path: P) -> DBaseResult<TableReader<Header<impl io::Read>>> {
+    let file = File::open(path)?;
+    let reader = BufReader::new(file);
+    TableReader::<Header<BufReader<File>>>::new(reader)
 }
 
+impl<S: TableReaderState> TableReader<S> {
+    pub fn n_records(&self) -> usize {
+        self.table.n_records
+    }
 
-impl DBaseTable {
     pub fn n_header_bytes(&self) -> usize {
-        self.fields.len() * 32 + 33
+        self.table.fields.len() * 32 + 33
     }
+}
 
-    pub fn try_open(path: &str) -> DBaseResult<(DBaseTable, Mmap)> {
-        let file = File::open(path)?;
-        let mmapped = unsafe { Mmap::map(&file)? };
-        let dbase = DBaseTable::try_from(&*mmapped)?;
-        Ok((dbase, mmapped))
-    }
-
-    pub fn try_from(mut reader: impl io::Read) -> DBaseResult<DBaseTable> {
+impl<R> TableReader<Header<R>>
+    where R: io::Read
+{
+    pub fn new(mut reader: R) -> DBaseResult<Self> {
         let mut data: [u8; 32] = [0; 32];
         reader.read_exact(&mut data)?;
 
@@ -371,29 +352,36 @@ impl DBaseTable {
         let mut terminator: [u8; 1] = [0];
         reader.read_exact(&mut terminator)?;
         assert_eq!(terminator[0], 0x0d);
-        assert_eq!(table.n_header_bytes(), n_header_bytes);
+        // assert_eq!(table.n_header_bytes(), n_header_bytes);
 
-        Ok(table)
+        Ok(TableReader {
+            table: Box::new(table),
+            state: Header {
+                inner: reader,
+            },
+        })
     }
 
-    pub fn records<R: io::Read>(&self, reader: R) -> RecordIterator<R> {
-        let record_size = 1 + self.fields.iter().fold(0, |s, f| s + f.length);
+    pub fn records<'a>(self) -> TableReader<Records<R>> {
+        let record_size = 1 + self.table.fields.iter().fold(0, |s, f| s + f.length);
         log::info!("Record size: {record_size}");
 
-        RecordIterator {
-            table: &self,
-            record_size,
-            reader,
-            cur_record: 0,
+        TableReader{
+            table: self.table,
+            state: Records {
+                record_size,
+                cur_record: 0,
+                inner: self.state.inner,
+            }
         }
     }
 }
 
+
 #[derive(Debug)]
-pub struct RecordIterator<'a, R: io::Read> {
-    table: &'a DBaseTable,
+pub struct Records<R: io::Read> {
+    inner: R,
     record_size: usize,
-    reader: R,
     cur_record: usize,
 }
 
@@ -411,28 +399,27 @@ pub struct FieldValue<'a> {
     pub value: Field,
 }
 
-impl<'a, R: io::Read> Iterator for RecordIterator<'a, R> {
-    type Item = DBaseResult<FieldIterator<'a>>;
-
-    fn next(&mut self) -> Option<Self::Item> {
+impl<R: io::Read> TableReader<Records<R>>
+{
+    pub fn next(&mut self) -> Option<DBaseResult<FieldIterator>> {
         const DELETED: u8 = 0x2a;
 
-        if self.cur_record == self.table.n_records {
+        if self.state.cur_record == self.table.n_records {
             return None;
         }
 
-        let mut buf = vec![0; self.record_size];
+        let mut buf = vec![0; self.state.record_size];
         loop {
-            if let Err(err) = self.reader.read_exact(&mut buf) {
+            if let Err(err) = self.state.inner.read_exact(&mut buf) {
                 return Some(Err(DBaseErrorKind::IOError(err)));
             }
             if buf[0] != DELETED {
                 break;
             }
-            log::info!("Record {} is deleted", self.cur_record);
+            log::info!("Record {} is deleted", self.state.cur_record);
         }
 
-        self.cur_record += 1;
+        self.state.cur_record += 1;
 
         Some(Ok(FieldIterator {
             table: &self.table,
