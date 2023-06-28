@@ -1,14 +1,13 @@
 mod xbase;
+mod bktree;
 
 use std::fmt::{Display, Formatter};
 use std::io;
-use std::io::{BufReader};
-use std::fs::File;
-use std::iter::zip;
 use eddie::DamerauLevenshtein;
 use itertools::Itertools;
 
 use log;
+use crate::bktree::BKTree;
 
 use crate::xbase::{DBaseTable, Decimal, FieldDescriptor, Field, DBaseResult, TableReader, Header};
 
@@ -25,30 +24,43 @@ fn main() -> DBaseResult<()> {
     let dbt = xbase::try_from_path(personnel_path)?;
 
     let mut people = read_personnel(dbt)?;
-    let damlev = DamerauLevenshtein::new();
     println!("{}", people.len());
 
-    let mut compared: Vec<(usize, &PersonRecord, &PersonRecord)> = people.iter()
-        .take(500)
-        .tuple_combinations()
-        .map(|(p0, p1)| {
-            let sim = (
-                damlev.distance(&p0.first_name, &p1.first_name)
-                    + damlev.distance(&p0.last_name, &p1.last_name)
-            );
-            (sim, p0, p1)
-        }
-    ).sorted_unstable_by(
-        |a, b| (a.0).cmp(&b.0)
-    ).collect();
-
-    for (sim, p0, p1) in compared.iter().take(100) {
-        println!("{:15} {:<20} | {:15} {:<20} | {}",
-                 p0.first_name, p0.last_name, p1.first_name, p1.last_name,
-                 sim)
+    let mut bkt = BKTree::new(people.first().unwrap());
+    for p in &people {
+        bkt.insert(p);
     }
 
+    let damlev = DamerauLevenshtein::new();
+    for p0 in &people {
+        let p1 = bkt.find_closest(&p0);
+        let dist = damlev.distance(&p0.first_name, &p1.first_name)
+                + damlev.distance(&p0.last_name, &p1.last_name);
+        println!("{:15} {:<20} | {:15} {:<20} | {}",
+                 p0.first_name, p0.last_name, p1.first_name, p1.last_name,
+                 dist)
+    }
+
+
     Ok(())
+}
+
+struct MyNum(u64);
+impl bktree::Metric for MyNum {
+    type Item = MyNum;
+    fn dist(&self, x: &Self::Item) -> usize {
+        self.0.abs_diff(x.0) as usize
+    }
+}
+
+impl<'a> bktree::Metric for &'a PersonRecord {
+    type Item = &'a PersonRecord;
+
+    fn dist(&self, x: &Self::Item) -> usize {
+        let damlev = DamerauLevenshtein::new();
+        damlev.distance(&self.first_name, &x.first_name)
+        + damlev.distance(&self.last_name, &x.last_name)
+    }
 }
 
 /// An event is scored using either Time or Score.
