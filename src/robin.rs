@@ -1,24 +1,27 @@
 use chrono::{NaiveDate};
-use serde::{Deserialize};
+use serde::{Serialize, Deserialize};
+use crate::validation::RodeoEvent;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all(deserialize = "camelCase"))]
 pub struct Registration {
+    #[serde(skip_serializing)]
     id: u64,
-    pub stalls: String,  // Should probably be an integer.
+    pub stalls: String,
+    // Should probably be an integer.
     pub contestant: Contestant,
     pub events: Vec<Event>,
     pub payment: Payment,
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all(deserialize="camelCase"))]
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all(deserialize = "camelCase"))]
 pub struct Payment {
     pub total: u64, // Should this be integral?
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all(deserialize="camelCase"))]
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all(deserialize = "camelCase"))]
 pub struct Contestant {
     pub first_name: String,
     pub last_name: String,
@@ -26,7 +29,8 @@ pub struct Contestant {
     pub dob: Date,
     pub age: u8,
     pub gender: String,
-    pub is_member: String, // Should probably be a boolean.
+    pub is_member: String,
+    // Should probably be a boolean.
     pub ssn: String,
     pub note_to_director: String,
     pub address: Address,
@@ -41,15 +45,8 @@ impl Contestant {
     }
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all(deserialize="camelCase"))]
-pub enum CompetitionCategory {
-    Cowboys,
-    Cowgirls,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all(deserialize="camelCase"))]
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all(deserialize = "camelCase"))]
 pub struct Address {
     pub email: String,
     pub address_line_1: String,
@@ -62,24 +59,60 @@ pub struct Address {
     pub home_phone_no: String,
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all(deserialize="camelCase"))]
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all(deserialize = "camelCase"))]
 pub struct Association {
     pub igra: String,
     pub member_assn: String,
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all(deserialize="camelCase"))]
+#[serde(untagged, from = "SomeEventID")]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub enum EventID {
+    Known(RodeoEvent),
+    Unknown(u64),
+}
+
+// This (and the From implementation below) is a kludge
+// to deserialize both ints and strings into a RodeoEvent (when possible)
+// or to keep the Unknown id (when needed),
+// and to reproduce that output afterward.
+//
+// It's a consequence of trying several other things that didn't work quite right,
+// and ending up with some vestigial code that should be refactored,
+// but since this isn't expected to live for long anyway, we'll keep what works.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum SomeEventID {
+    Known(RodeoEvent),
+    Unknown(u64),
+}
+
+impl From<SomeEventID> for EventID {
+    fn from(value: SomeEventID) -> Self {
+        match value {
+            SomeEventID::Known(re) => EventID::Known(re),
+            SomeEventID::Unknown(id) => {
+                match RodeoEvent::from_id(id) {
+                    Some(re) => EventID::Known(re),
+                    None => EventID::Unknown(id),
+                }
+            }
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all(deserialize = "camelCase"))]
 pub struct Event {
-    #[serde(rename(deserialize="rodeoEventRelId"))]
-    pub id: u64,
+    #[serde(rename(deserialize = "rodeoEventRelId"))]
+    pub id: EventID,
     pub partners: Vec<String>,
     pub round: u64,
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all(deserialize="camelCase"))]
+#[derive(Copy, Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all(deserialize = "camelCase"))]
 pub struct Date {
     pub year: u16,
     pub month: u8,
