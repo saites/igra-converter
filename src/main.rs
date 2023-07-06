@@ -13,7 +13,7 @@ use log;
 use serde::Serialize;
 use validation::{EntryValidator, PersonRecord, Processed};
 use crate::robin::Registration;
-use crate::validation::{Fix, Problem, Suggestion};
+use crate::validation::{Fix, Problem, Report, Suggestion};
 
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -36,16 +36,16 @@ fn main() -> Result<(), Box<dyn Error>> {
     log::info!("Number of entries JSON file: {}", reg.len());
 
     let validator = EntryValidator::new(&people);
-    let validation = validator.validate_entries(&reg);
+    let report = validator.validate_entries(&reg);
 
     write_output(
         io::stdout(),
-        &validation,
+        &report,
         &people,
     )?;
 
     // let j = serde_json::to_string_pretty(&report::Report::from_processed(&validation))?;
-    let j = serde_json::to_string_pretty(&validation)?;
+    let j = serde_json::to_string_pretty(&report)?;
     write!(BufWriter::new(File::create("./web/validation_output.json")?), "{j}")?;
 
     /*
@@ -60,8 +60,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn write_output(mut w: impl io::Write, validation: &Vec<Processed>, people: &Vec<PersonRecord>) -> Result<(), Box<dyn Error>> {
-    for v in validation {
+fn write_output(mut w: impl io::Write, report: &Report, people: &Vec<PersonRecord>) -> Result<(), Box<dyn Error>> {
+    for v in &report.results {
         let c = &v.registration.contestant;
 
         println!("{} {}", c.first_name, c.last_name);
@@ -75,10 +75,13 @@ fn write_output(mut w: impl io::Write, validation: &Vec<Processed>, people: &Vec
             println!("\tNote to Director: {}", c.note_to_director);
         }
 
-        for (partner, events) in &v.listed_partners {
-            println!("\t\tPartner: {partner}");
-            for (event, round) in events {
-                println!("\tEvent: {event:?} - Round: {round}");
+        if !v.partners.is_empty() {
+            for (person_rec, partner_details) in v.partners.iter().filter_map(|p| report.relevant.get(p.igra_number).zip(Some(p))) {
+                println!("\t\t{e:20} round {r} - {p}",
+                    e=format!("{:?}", &partner_details.event),
+                    r=&partner_details.round,
+                    p=person_rec,
+                );
             }
         }
 

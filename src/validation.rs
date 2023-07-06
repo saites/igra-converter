@@ -9,6 +9,7 @@ use std::ops::Deref;
 use eddie::DamerauLevenshtein;
 use std::iter::zip;
 use std::cmp::Ordering;
+use std::rc::Rc;
 use phf::phf_map;
 
 use crate::bktree;
@@ -139,6 +140,18 @@ pub struct EntryValidator<'a> {
     by_perf_last: BKTree<ByPerformanceLast<'a>, usize>,
 }
 
+/// This is the report structure returned from validation.
+#[derive(Debug, Serialize)]
+pub struct Report<'a> {
+    /// These are the processed entries, in the same order as the incoming entries.
+    pub results: Vec<Processed<'a>>,
+    /// This is a collection of IGRA number -> record for relevant records.
+    ///
+    /// Relevant records include entries matched to a single record
+    /// as well as close matches to information given in entries.
+    pub relevant: HashMap<&'a str, &'a PersonRecord>,
+}
+
 impl<'a> EntryValidator<'a> {
     pub(crate) fn new(people: &'a Vec<PersonRecord>) -> Self {
         let mut ev = EntryValidator {
@@ -164,16 +177,16 @@ impl<'a> EntryValidator<'a> {
     /// Validates the registration entries against the people database.
     ///
     /// TODO: refactor the mess below
-    pub fn validate_entries(&self, entries: &'a Vec<Registration>) -> Vec<Processed<'a>> {
+    pub fn validate_entries(&self, entries: &'a Vec<Registration>) -> Report<'a> {
         let damlev = DamerauLevenshtein::new();
         let today = chrono::Utc::now().naive_utc().date();
 
         let mut results: Vec<Processed> = Vec::with_capacity(entries.len());
+        let mut relevant = HashMap::<&str, &PersonRecord>::new();
 
         for r in entries {
             let mut issues = Vec::<Suggestion>::new();
-            let mut list_partners = HashMap::<&PersonRecord, Vec<(RodeoEvent, RoundID)>>::new();
-            let mut possible_others = HashMap::<String, &PersonRecord>::new();
+            let mut confirmed_partners = HashMap::<&PersonRecord, Vec<(RodeoEvent, RoundID)>>::new();
 
             let n = &r.contestant;
             log::debug!("Entry: {first:15} {last:<20} : {id}",
@@ -199,7 +212,7 @@ impl<'a> EntryValidator<'a> {
                 issues.push(Suggestion { problem: Problem::NotEnoughRounds, fix: Fix::ContactRegistrant });
             }
 
-            self.validate_events(&r, &mut issues, &mut list_partners, &mut possible_others);
+            self.validate_events(&r, &mut issues, &mut confirmed_partners, &mut relevant);
 
             // Search for members that closely match the registration.
             let mut candidates = DistCounter::<&PersonRecord>::new();
@@ -276,7 +289,7 @@ impl<'a> EntryValidator<'a> {
                             problem: Problem::MaybeAMember,
                             fix: Fix::UseThisRecord(IGRANumber(r.igra_number.clone())),
                         });
-                        possible_others.insert(r.igra_number.clone(), r);
+                        relevant.insert(&r.igra_number, r);
                     }
                 }
             } else {
@@ -358,7 +371,8 @@ impl<'a> EntryValidator<'a> {
                         }
                     }
 
-                    found = Some(*m);
+                    found = Some(m.igra_number.as_str());
+                    relevant.insert(&m.igra_number, *m);
                 } else {
                     // We didn't find them, but maybe we found some close matches.
                     for (r, _) in candidates {
@@ -366,22 +380,39 @@ impl<'a> EntryValidator<'a> {
                             problem: Problem::NoPerfectMatch,
                             fix: Fix::UseThisRecord(IGRANumber(r.igra_number.clone())),
                         });
-                        possible_others.insert(r.igra_number.clone(), r);
+                        relevant.insert(&r.igra_number, r);
                     }
                 }
             }
+
+            let partners = confirmed_partners.iter().flat_map(|(person, events)| {
+                events.iter().map(|(event, round)| {
+                    Partner{
+                        igra_number: &person.igra_number,
+                        event: *event,
+                        round: *round,
+                    }
+                })
+            }).collect();
 
             results.push(Processed {
                 registration: r,
                 found,
                 issues,
-                listed_partners: list_partners,
-                possible_others,
+                partners,
+                confirmed_partners,
             });
         }
 
         let mut more_issues: Vec<Vec<Suggestion>> = results.iter()
-            .map(|v| validate_cross_reg(&results, v)).collect();
+            .filter_map(|result| {
+                result.found.and_then(|f| relevant.get(f)).zip(Some(result))
+            })
+            .map(|(person_a, entry_a)| {
+                validate_cross_reg(&results, person_a, entry_a)
+            })
+            .collect();
+        // validate_cross_reg(&results, result)
         for (v, mi) in zip(&mut results, &mut more_issues) {
             for sugg in mi.iter() {
                 let other = match &sugg.fix {
@@ -398,20 +429,23 @@ impl<'a> EntryValidator<'a> {
                     _ => { None }
                 };
                 if let Some((0, o)) = other {
-                    v.possible_others.insert(o.0.igra_number.clone(), o.0);
+                    relevant.insert(&o.0.igra_number, o.0);
                 }
             }
 
             v.issues.append(mi);
         }
 
-        results
+        Report {
+            results,
+            relevant,
+        }
     }
 
     fn validate_events(&self, r: &Registration,
                        issues: &mut Vec<Suggestion>,
                        list_partners: &mut HashMap<&'a PersonRecord, Vec<(RodeoEvent, RoundID)>>,
-                       possible_others: &mut HashMap<String, &'a PersonRecord>,
+                       possible_others: &mut HashMap<&'a str, &'a PersonRecord>,
     ) {
         for event in &r.events {
             if event.round > 2 {
@@ -432,8 +466,8 @@ impl<'a> EntryValidator<'a> {
 
     fn validate_partners(&self, event: &Event, db_event: RodeoEvent,
                          issues: &mut Vec<Suggestion>,
-                         list_partners: &mut HashMap<&'a PersonRecord, Vec<(RodeoEvent, RoundID)>>,
-                         possible_others: &mut HashMap<String, &'a PersonRecord>,
+                         confirmed_partners: &mut HashMap<&'a PersonRecord, Vec<(RodeoEvent, RoundID)>>,
+                         possible_others: &mut HashMap<&'a str, &'a PersonRecord>,
     ) {
         let damlev = DamerauLevenshtein::new();
         let partners: Vec<_> = event.partners.iter()
@@ -505,7 +539,7 @@ impl<'a> EntryValidator<'a> {
                     });
 
                     if is_match {
-                        match list_partners.entry(candidate.0) {
+                        match confirmed_partners.entry(candidate.0) {
                             hash_map::Entry::Occupied(mut e) => { e.get_mut().push((db_event, event.round)); }
                             hash_map::Entry::Vacant(e) => { e.insert(vec![(db_event, event.round)]); }
                         }
@@ -516,8 +550,7 @@ impl<'a> EntryValidator<'a> {
                             problem: Problem::UnknownPartner { event: db_event, round: event.round },
                             fix: Fix::UseThisRecord(IGRANumber(candidate.0.igra_number.clone())),
                         });
-                        possible_others.insert(candidate.0.igra_number.clone(), candidate.0);
-
+                        possible_others.insert(&candidate.0.igra_number, candidate.0);
                     }
                 }
 
@@ -561,7 +594,7 @@ impl<'a> EntryValidator<'a> {
                 let second = maybe_partners.next();
 
                 if first.is_some() && second.is_none() {
-                    match list_partners.entry(first.unwrap()) {
+                    match confirmed_partners.entry(first.unwrap()) {
                         hash_map::Entry::Occupied(mut e) => { e.get_mut().push((db_event, event.round)); }
                         hash_map::Entry::Vacant(e) => { e.insert(vec![(db_event, event.round)]); }
                     }
@@ -579,7 +612,7 @@ impl<'a> EntryValidator<'a> {
                     problem: Problem::UnknownPartner { event: db_event, round: event.round },
                     fix: Fix::UseThisRecord(IGRANumber(p.igra_number.clone())),
                 });
-                possible_others.insert(p.igra_number.clone(), p);
+                possible_others.insert(&p.igra_number, p);
             });
         }
     }
@@ -598,30 +631,25 @@ impl<'a> EntryValidator<'a> {
 /// - For each partner event:
 ///   - If Person A says Person B is their partner, Person B should be registered.
 ///   - Person B should list Person A as their partner for the same event.
-fn validate_cross_reg(entries: &Vec<Processed>, entry: &Processed) -> Vec<Suggestion> {
+fn validate_cross_reg(entries: &Vec<Processed>, person_a: &PersonRecord, entry_a: &Processed) -> Vec<Suggestion> {
     let mut issues = Vec::<Suggestion>::new();
-    if entry.found.is_none() {
-        return issues;
-    }
 
     // TODO: Check if a person appears to list themself as partner.
     // TODO: Check if a person is registered more than once.
 
-    let person_a = entry.found.unwrap();
-
-    for (person_b, a_events_with_b) in &entry.listed_partners {
-        // Find an entry with this IGRA number.
-        let b_entry = entries.iter().find(|other| {
-            other.found.map_or(false, |other| {
-                other.igra_number == person_b.igra_number
+    for (person_b, a_events_with_b) in &entry_a.confirmed_partners {
+        // Try to find the entry for B, the partner of A.
+        let entry_b = entries.iter().find(|other| {
+            other.found.map_or(false, |other_igra_num| {
+                other_igra_num == person_b.igra_number
             })
         });
 
         // For every event and round A claims to partner with B,
         // make sure B claims to partner with A.
-        let b_to_a = b_entry.map(|b| b.listed_partners.get(person_a)).flatten();
+        let b_to_a = entry_b.map(|b| b.confirmed_partners.get(person_a)).flatten();
         for (a_event, a_round) in a_events_with_b {
-            if b_entry.is_none() {
+            if entry_b.is_none() {
                 issues.push(Suggestion {
                     problem: Problem::UnregisteredPartner { event: *a_event, round: *a_round },
                     fix: Fix::AddRegistration(IGRANumber(person_b.igra_number.clone())),
@@ -751,15 +779,23 @@ pub struct Suggestion {
     pub fix: Fix,
 }
 
+#[derive(Debug, Serialize)]
+pub struct Partner<'a> {
+    pub event: RodeoEvent,
+    pub round: RoundID,
+    pub igra_number: &'a str,
+}
+
 /// This is the result of processing registration data.
 #[derive(Debug, Serialize)]
 pub struct Processed<'a> {
     pub registration: &'a Registration,
-    pub found: Option<&'a PersonRecord>,
+    pub found: Option<&'a str>,
     pub issues: Vec<Suggestion>,
-    #[serde(skip_serializing)]
-    pub listed_partners: HashMap<&'a PersonRecord, Vec<(RodeoEvent, RoundID)>>,
-    pub possible_others: HashMap<String, &'a PersonRecord>,
+    pub partners: Vec<Partner<'a>>,
+
+    #[serde(skip)]
+    confirmed_partners: HashMap<&'a PersonRecord, Vec<(RodeoEvent, RoundID)>>,
 }
 
 
