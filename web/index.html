@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="preload stylesheet" href="./style.css" as="style">
+  <script src="https://cdn.tailwindcss.com"></script>
+
+  <script type="importmap">
+  {
+    "imports": {
+      "vue": "https://unpkg.com/vue@3/dist/vue.esm-browser.js"
+    }
+  }
+
+  </script>
+
+  <title>Registration Validator</title>
+</head>
+
+<body>
+<div id="app">
+  <my-grid
+      :results="registrationData?.results"
+      :relevant="registrationData?.relevant"
+  >
+  </my-grid>
+</div>
+
+<script type="module">
+import MyGrid from './Grid.js'
+import { createApp, ref, watchEffect } from 'vue'
+
+const url = "./validation_output.json"
+
+createApp({
+  components: {
+    MyGrid,
+  },
+  setup() {
+    const registrationData = ref(null)
+
+    watchEffect(async () => {
+      registrationData.value = await (await fetch(url)).json()
+    })
+
+    return {
+      registrationData,
+    }
+  }
+}).mount('#app')
+
+</script>
+
+
+</body>
+</html>
