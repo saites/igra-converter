@@ -131,6 +131,7 @@ const PersonalDataRow = {
     dbValue: String,
     issues: Array,
     relevant: Object | null,
+    maybeMatches: Array | null,
   },
   setup(props) {
     function isThisField(issue) {
@@ -177,17 +178,11 @@ const PersonalDataRow = {
       });
     })
 
-    const maybeMatches = computed(() => {
-      let { relevant } = props
-
-      return relevant ? relevant : []
-    })
 
     return {
       missingRegValue,
       isDbMismatch,
       missingDbValue,
-      maybeMatches,
     }
   },
   template: `
@@ -204,9 +199,11 @@ const PersonalDataRow = {
         <slot name="dbValue">{{dbValue}}</slot>
     </td>
 
+    <template v-if="maybeMatches">
     <td v-for="maybe in maybeMatches">
       <slot name="maybeMatches" v-bind="maybe"></slot>
     </td>
+    </template>
   </tr>
   `
 };
@@ -249,11 +246,69 @@ export default {
       return `${first} ${last}`
     }
 
+    // return true if the given issue's problem matches any of the given fields
+    function isThisField(issue, fields) {
+      return compareTo.some((f) => issue.problem.data.field === f)
+    }
+
+    // fields the registrant didn't fill in
+    const unfilledFields = computed(() => {
+      let { issues } = props;
+      if (!issues) { return false; }
+
+      return (issues
+        .filter((issue) => issue.problem.name === "NoValue")
+        .map((issue) => issue.problem.data.field)
+      )
+    })
+
+    // Do we have a database value, but different from this one?
+    const isDbMismatch = computed(() => {
+      let { issues, field, fields } = props;
+      if (!issues) { return false; }
+      let compareTo = field ? [field] : (fields ?? []);
+
+      return issues.some((issue) => {
+          return (
+            issue.problem.name === "DbMismatch"
+            && compareTo.some((f) => issue.problem.data.field === f)
+          )
+      })
+    })
+
+    // Should we expect _any_ DB data?
+    const missingDbValue = computed(() => {
+      let { issues } = props;
+      if (!issues) { return false; }
+      return issues.some((issue) => {
+        return (
+          issue.problem.name === "NotAMember"
+          || issue.problem.name === "MaybeAMember"
+          || issue.problem.name === "NoPerfectMatch"
+        )
+      });
+    })
+
+    // Possible matches to the registrant
+    const maybeMatches = computed(() => {
+      let { issues, relevant } = props
+      if (!issues || !relevant) { return [] }
+
+      return (
+        issues
+          .filter((issue) => issue.problem.name === "NoPerfectMatch" && issue.fix.name === "UseThisRecord")
+          .map((issue) => relevant[issue.fix.data])
+          .filter((record) => record !== undefined)
+      )
+    })
+
+
     return {
       dbData,
       dbContestantCat,
       fullName,
       contestantBday,
+      maybeMatches,
     }
   },
   template: `
@@ -268,8 +323,7 @@ export default {
             <th>Property</th>
             <th>Registration</th>
             <th>Database Entry</th>
-
-            <th>Possible Match</th>
+            <th v-for="match in maybeMatches">Possible Match</th>
           </tr>
         </thead>
         <tbody>
@@ -328,7 +382,7 @@ export default {
             :regValue=contestant.gender
             :dbValue=dbContestantCat
             :issues=issues
-            :relevant=relevant
+            :maybeMatches=maybeMatches
             class="oldstyle-nums"
           >
             <template #regValue>
