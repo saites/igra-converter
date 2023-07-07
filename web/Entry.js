@@ -2,6 +2,96 @@ import DbTable from './Contestant.js'
 import { friendlyProblem, friendlyFix } from './utils.js'
 import { ref, computed } from 'vue'
 
+function fullName(first, last) {
+  if (!first) { return last ?? undefined; }
+  if (!last) { return first ?? undefined; }
+  return `${first} ${last}`
+}
+
+function dbContestantCat(value) {
+  if (!value) { return }
+  return value === "M" ? "Cowboys" : ("F" ? "Cowgirls" : "Unknown")
+}
+
+const DataCell = {
+  props: {
+    value: Object | String,
+  },
+  setup(props) {
+    return {
+    }
+  },
+  template: `
+  <td class="text-center"
+    v-if="value !== undefined && value !== null">{{value}}</td>
+  <td v-else class="text-center">-</td>
+  `
+}
+
+const AddressCell = {
+  props: {
+    line1: String | null,
+    line2: String | null,
+    city: String,
+    region: String,
+    country: String | null,
+    postalCode: String,
+  },
+  setup(props) {
+    return {
+    }
+  },
+  template: `
+  <td class="text-center oldstyle-nums">
+      {{line1}}
+      <template v-if="line2"><br>{{line2}}</template>
+      <br>{{city}}, {{region}} {{postalCode}}
+      <template v-if='country && country !== "United States"'><br>{{country}}</template>
+  </td>
+  `
+}
+
+const DbRecordRow = {
+  components: {
+    DataCell,
+    AddressCell,
+  },
+  props: {
+    header: String,
+    record: Object | null,
+  },
+  setup(props) {
+    return {
+      fullName,
+      dbContestantCat,
+    }
+  },
+  template: `
+    <tr>
+      <th>{{header}}</th>
+      <data-cell :value=record?.igra_number></data-cell>
+      <data-cell :value=record?.association></data-cell>
+      <data-cell :value="fullName(record?.legal_first, record?.legal_last)"></data-cell>
+      <data-cell :value="fullName(record?.first_name, record?.last_name)"></data-cell>
+      <data-cell :value=record?.birthdate></data-cell>
+      <data-cell :value=dbContestantCat(record?.sex)></data-cell>
+
+      <address-cell v-if="record"
+        :line1=record.address
+        :city=record.city
+        :region=record.state
+        :postalCode=record.zip
+      ></address-cell>
+      <data-cell v-else></data-cell>
+
+      <data-cell :value=record?.email></data-cell>
+      <data-cell :value=record?.cell_phone></data-cell>
+      <data-cell :value=record?.home_phone></data-cell>
+      <data-cell></data-cell>
+    </tr>
+  `
+}
+
 const EventRow = {
   props: {
     event: Object,
@@ -122,97 +212,13 @@ const EventRow = {
 };
 
 
-const PersonalDataRow = {
-  props: {
-    name: String,
-    field: String | null,
-    fields: Array | null,
-    regValue: String,
-    dbValue: String,
-    issues: Array,
-    relevant: Object | null,
-    maybeMatches: Array | null,
-  },
-  setup(props) {
-    function isThisField(issue) {
-      let { issues, field, fields } = props;
-      if (!issues) { return false; }
-      let compareTo = field ? [field] : (fields ?? []);
-      return compareTo.some((f) => issue.problem.data.field === f)
-    }
-
-    // Did the contestant fill the field?
-    const missingRegValue = computed(() => {
-      let { issues } = props;
-      if (!issues) { return false; }
-
-      return issues.some((issue) => {
-          return (issue.problem.name === "NoValue" && isThisField(issue))
-      })
-    })
-
-    // Do we have a database value, but different from this one?
-    const isDbMismatch = computed(() => {
-      let { issues, field, fields } = props;
-      if (!issues) { return false; }
-      let compareTo = field ? [field] : (fields ?? []);
-
-      return issues.some((issue) => {
-          return (
-            issue.problem.name === "DbMismatch"
-            && compareTo.some((f) => issue.problem.data.field === f)
-          )
-      })
-    })
-
-    // Should we expect _any_ DB data?
-    const missingDbValue = computed(() => {
-      let { issues } = props;
-      if (!issues) { return false; }
-      return issues.some((issue) => {
-        return (
-          issue.problem.name === "NotAMember"
-          || issue.problem.name === "MaybeAMember"
-          || issue.problem.name === "NoPerfectMatch"
-        )
-      });
-    })
-
-
-    return {
-      missingRegValue,
-      isDbMismatch,
-      missingDbValue,
-    }
-  },
-  template: `
-  <tr>
-    <td class="text-end font-bold">{{name}}</td>
-
-    <td v-if="missingRegValue" class="bg-red-400">(missing)</td>
-    <td v-else :class="isDbMismatch ? 'bg-yellow-400' : ''">
-        <slot name="regValue">{{regValue}}</slot>
-    </td>
-
-    <td v-if="missingDbValue" class="text-center">-</td>
-    <td v-else :class="isDbMismatch ? 'bg-yellow-400' : ''">
-        <slot name="dbValue">{{dbValue}}</slot>
-    </td>
-
-    <template v-if="maybeMatches">
-    <td v-for="maybe in maybeMatches">
-      <slot name="maybeMatches" v-bind="maybe"></slot>
-    </td>
-    </template>
-  </tr>
-  `
-};
-
 export default {
   components: {
     DbTable,
     EventRow,
-    PersonalDataRow,
+    DataCell,
+    AddressCell,
+    DbRecordRow,
   },
   props: {
     contestant: Object,
@@ -224,27 +230,10 @@ export default {
   },
   setup(props) {
 
-    function dbData(key) {
-      return props.found ? props.found[key] : "-"
-    }
-
-    const dbContestantCat = computed(() => {
-      if (!props.found) {
-        return "-"
-      }
-      return props.found.sex === "M" ? "Cowboys" : "Cowgirls"
-    })
-
     const contestantBday = computed(() => {
       let { contestant } = props;
       return `${contestant.dob.month}/${contestant.dob.day}/${contestant.dob.year}`
     })
-
-    function fullName(first, last) {
-      if (!first) { return last ?? undefined; }
-      if (!last) { return first ?? undefined; }
-      return `${first} ${last}`
-    }
 
     // return true if the given issue's problem matches any of the given fields
     function isThisField(issue, fields) {
@@ -302,9 +291,7 @@ export default {
       )
     })
 
-
     return {
-      dbData,
       dbContestantCat,
       fullName,
       contestantBday,
@@ -313,135 +300,62 @@ export default {
   },
   template: `
   <article>
-    <div class="grid grid-cols-3">
+    <div class="">
     <section>
       <header class="text-lg">Registration Data</header>
 
       <table class="table-auto">
         <thead>
           <tr>
-            <th>Property</th>
-            <th>Registration</th>
-            <th>Database Entry</th>
-            <th v-for="match in maybeMatches">Possible Match</th>
+            <th></th>
+            <th>IGRA Number</th>
+            <th>Association</th>
+            <th>Legal Name</th>
+            <th>Performance Name</th>
+            <th>Date of Birth</th>
+            <th>Competes With</th>
+            <th>Address</th>
+            <th>Email</th>
+            <th>Cell Phone</th>
+            <th>Home Phone</th>
+            <th>Note to Director</th>
           </tr>
         </thead>
         <tbody>
 
-          <personal-data-row
-            name="IGRA Number"
-            field="IGRANumber"
-            :regValue=contestant.association?.igra
-            :dbValue=found?.igra_number
-            :issues=issues
-          ></personal-data-row>
+          <tr>
+            <th>Registration Data</th>
+            <data-cell :value=contestant.association?.igra></data-cell>
+            <data-cell :value=contestant.association?.member_assn></data-cell>
+            <data-cell :value="fullName(contestant.first_name, contestant.last_name)"></data-cell>
+            <data-cell :value=contestant.performance_name></data-cell>
+            <data-cell :value=contestantBday></data-cell>
+            <data-cell :value=contestant.gender></data-cell>
 
-          <personal-data-row
-            name="Association"
-            field="Association"
-            :regValue=contestant.association?.member_assn
-            :dbValue=found?.association
-            :issues=issues
-          ></personal-data-row>
+            <address-cell
+              :line1=contestant.address.address_line_1
+              :line2=contestant.address.address_line_2
+              :city=contestant.address.city
+              :region=contestant.address.region
+              :country=contestant.address.country
+              :postalCode=contestant.address.zip_code
+            ></address-cell>
 
-          <personal-data-row
-            name="Legal Name"
-            field="LegalName"
-            :regValue="fullName(contestant.first_name, contestant.last_name)"
-            :dbValue="fullName(found?.legal_first, found?.legal_last)"
-            :issues=issues
-          ></personal-data-row>
+            <data-cell :value=contestant.address.email></data-cell>
+            <data-cell :value=contestant.cell_phone_no></data-cell>
+            <data-cell :value=contestant.home_phone_no></data-cell>
+            <data-cell :value=contestant.note_to_director></data-cell>
+          </tr>
 
-          <personal-data-row
-            name="Performance Name"
-            field="PerformanceName"
-            :regValue=contestant.performance_name
-            :dbValue="fullName(found?.first_name, found?.last_name)"
-            :issues=issues
-          ></personal-data-row>
-
-          <personal-data-row
-            name="Date of Birth"
-            field="DateOfBirth"
-            :regValue=contestantBday
-            :dbValue=found?.birthdate
-            :issues=issues
-          ></personal-data-row>
-
-          <personal-data-row
-            name="Competes With"
-            field="CompetitionCategory"
-            :regValue=contestant.gender
-            :dbValue=dbContestantCat
-            :issues=issues
-          ></personal-data-row>
-
-          <personal-data-row
-            name="Address"
-            :fields='["AddressLine", "City", "Region", "Country", "PostalCode"]'
-            :regValue=contestant.gender
-            :dbValue=dbContestantCat
-            :issues=issues
-            :maybeMatches=maybeMatches
-            class="oldstyle-nums"
-          >
-            <template #regValue>
-              {{contestant.address.address_line_1}}<br>
-              <template v-if="contestant.address.address_line_2">
-              {{contestant.address.address_line_2}}<br>
-              </template>
-              {{contestant.address.city}}, {{contestant.address.region}} {{contestant.address.zip_code}}
-              <template v-if='contestant.address.country != "United States"'><br>{{contestant.address.country}}</template>
-            </template>
-
-            <template #dbValue>
-              {{found?.address}}<br>{{found?.city}}, {{found?.state}} {{found?.zip}}
-            </template>
-
-            <template #maybeMatches="maybe">
-              {{maybe.address}}<br>{{maybe.city}}, {{maybe.state}} {{maybe.zip}}
-            </template>
-          </personal-data-row>
-
-          <personal-data-row
-            name="Email"
-            field="Email"
-            :regValue=contestant.address.email
-            :dbValue=found?.email
-            :issues=issues
-          ></personal-data-row>
-
-          <personal-data-row
-            name="Cell Phone"
-            field="CellPhone"
-            :regValue=contestant.cell_phone_no
-            :dbValue=found?.cell_phone
-            :issues=issues
-          ></personal-data-row>
-
-          <personal-data-row
-            name="Home Phone"
-            field="HomePhone"
-            :regValue=contestant.home_phone_no
-            :dbValue=found?.home_phone
-            :issues=issues
-          ></personal-data-row>
-
-          <personal-data-row
-            name="Note to Director"
-            field="NoteToDirector"
-            :regValue=contestant.note_to_director
-            :issues=issues
-          ></personal-data-row>
-
+          <db-record-row header="Database Record"
+            :class="{ 'bg-yellow-200': !found }"
+            :record=found></db-record-row>
+          <db-record-row v-for="match in maybeMatches" header="Possible Match"
+            class="bg-blue-200"
+            :record=match></db-record-row>
 
         </tbody>
       </table>
-    </section>
-
-    <section v-if="found">
-      <header class="text-lg">Matching Database Entry</header>
-      <db-table :data=found></db-table>
     </section>
 
     </div>
