@@ -106,7 +106,7 @@ const EventRow = {
 
       return issues.filter((issue) => {
           return (
-            issue.problem.data && issue.problem.data.event === event.id
+            issue.problem.data && issue.problem.data.event === event.rodeoEventRelId
               && (
                 !issue.problem.data.round
                 || issue.problem.data.round === event.round
@@ -140,7 +140,7 @@ const EventRow = {
       }
 
       let eventPartners = partners.filter((p) => {
-        return p.event === event.id && p.round === event.round
+        return p.event === event.rodeoEventRelId && p.round === event.round
       });
 
       // match the user value to the correct partner.
@@ -179,7 +179,7 @@ const EventRow = {
   },
   template: `
       <tr :class="bgColor" class="text-center">
-        <td>{{event.id}}</td>
+        <td>{{event.rodeoEventRelId}}</td>
         <td>{{event.round}}</td>
         <td>{{event.partners[0]}}</td>
         <td>{{event.partners[1]}}</td>
@@ -326,25 +326,25 @@ export default {
           <tr>
             <th>Registration Data</th>
             <data-cell :value=contestant.association?.igra></data-cell>
-            <data-cell :value=contestant.association?.member_assn></data-cell>
-            <data-cell :value="fullName(contestant.first_name, contestant.last_name)"></data-cell>
-            <data-cell :value=contestant.performance_name></data-cell>
+            <data-cell :value=contestant.association?.memberAssn></data-cell>
+            <data-cell :value="fullName(contestant.firstName, contestant.lastName)"></data-cell>
+            <data-cell :value=contestant.performanceName></data-cell>
             <data-cell :value=contestantBday></data-cell>
             <data-cell :value=contestant.gender></data-cell>
 
             <address-cell
-              :line1=contestant.address.address_line_1
-              :line2=contestant.address.address_line_2
+              :line1=contestant.address.addressLine1
+              :line2=contestant.address.addressLine2
               :city=contestant.address.city
               :region=contestant.address.region
               :country=contestant.address.country
-              :postalCode=contestant.address.zip_code
+              :postalCode=contestant.address.zipCode
             ></address-cell>
 
             <data-cell :value=contestant.address.email></data-cell>
-            <data-cell :value=contestant.cell_phone_no></data-cell>
-            <data-cell :value=contestant.home_phone_no></data-cell>
-            <data-cell :value=contestant.note_to_director></data-cell>
+            <data-cell :value=contestant.address.cellPhoneNo></data-cell>
+            <data-cell :value=contestant.address.homePhoneNo></data-cell>
+            <data-cell :value=contestant.noteToDirector></data-cell>
           </tr>
 
           <db-record-row header="Database Record"

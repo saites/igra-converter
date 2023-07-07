@@ -4,8 +4,8 @@ use crate::validation::RodeoEvent;
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all(deserialize = "camelCase"))]
+#[serde(rename_all(serialize = "camelCase"))]
 pub struct Registration {
-    #[serde(skip_serializing)]
     pub id: u64,
     pub stalls: String,
     // Should probably be an integer.
@@ -16,12 +16,14 @@ pub struct Registration {
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all(deserialize = "camelCase"))]
+#[serde(rename_all(serialize = "camelCase"))]
 pub struct Payment {
     pub total: u64, // Should this be integral?
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all(deserialize = "camelCase"))]
+#[serde(rename_all(serialize = "camelCase"))]
 pub struct Contestant {
     pub first_name: String,
     pub last_name: String,
@@ -47,6 +49,7 @@ impl Contestant {
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all(deserialize = "camelCase"))]
+#[serde(rename_all(serialize = "camelCase"))]
 pub struct Address {
     pub email: String,
     pub address_line_1: String,
@@ -61,13 +64,15 @@ pub struct Address {
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all(deserialize = "camelCase"))]
+#[serde(rename_all(serialize = "camelCase"))]
 pub struct Association {
     pub igra: String,
     pub member_assn: String,
 }
 
-#[serde(untagged, from = "SomeEventID")]
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[serde(untagged, from = "SomeEventID")]
+#[serde(rename_all(serialize = "camelCase"))]
 pub enum EventID {
     Known(RodeoEvent),
     Unknown(u64),
@@ -104,8 +109,11 @@ impl From<SomeEventID> for EventID {
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all(deserialize = "camelCase"))]
+#[serde(rename_all(serialize = "camelCase"))]
 pub struct Event {
-    #[serde(rename(deserialize = "rodeoEventRelId"))]
+    #[serde(alias = "id")]
+    #[serde(alias = "rodeoEventRelId")]
+    #[serde(rename(serialize = "rodeoEventRelId"))]
     pub id: EventID,
     pub partners: Vec<String>,
     pub round: u64,
@@ -113,6 +121,7 @@ pub struct Event {
 
 #[derive(Copy, Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all(deserialize = "camelCase"))]
+#[serde(rename_all(serialize = "camelCase"))]
 pub struct Date {
     pub year: u16,
     pub month: u8,

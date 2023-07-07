@@ -1,4 +1,4 @@
-use std::fmt::{Display, Formatter, Write};
+use std::fmt::{Display, Formatter};
 use std::fs::File;
 use std::io;
 use std::io::BufReader;
@@ -12,7 +12,6 @@ use log;
 use binary_layout::prelude::*;
 use chrono::{Datelike, NaiveDate};
 use thiserror::Error;
-use crate::xbase::dbase_header::{last_updated, n_records};
 use crate::xbase::DBaseErrorKind::{InvalidLastUpdated, UnknownFieldType, UnknownLogicalValue};
 
 

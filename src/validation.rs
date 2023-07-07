@@ -9,10 +9,9 @@ use std::ops::Deref;
 use eddie::DamerauLevenshtein;
 use std::iter::zip;
 use std::cmp::Ordering;
-use std::rc::Rc;
 use phf::phf_map;
 
-use crate::{bktree, xbase};
+use crate::{bktree};
 use crate::bktree::BKTree;
 use crate::robin::{Event, EventID, Registration};
 use crate::robin::EventID::Known;
@@ -1182,7 +1181,7 @@ static REGIONS: phf::Map<&'static str, &'static str> = phf_map! {
 };
 
 impl PersonRecord {
-    fn region(&self) -> Option<&&'static str> {
+    pub fn region(&self) -> Option<&&'static str> {
         REGIONS.get(&self.state)
     }
 }
@@ -1210,7 +1209,7 @@ pub enum RodeoEvent {
 }
 
 impl RodeoEvent {
-    fn num_partners(self) -> u8 {
+    pub fn num_partners(self) -> u8 {
         match self {
             RodeoEvent::CalfRopingOnFoot => 0,
             RodeoEvent::MountedBreakaway => 0,
