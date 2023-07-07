@@ -1,7 +1,8 @@
-use std::fmt::{Display, Formatter};
+use std::fmt::{Display, Formatter, Write};
 use std::fs::File;
 use std::io;
 use std::io::BufReader;
+use std::iter::zip;
 use std::num::{ParseFloatError, ParseIntError};
 use std::path::Path;
 use std::str::FromStr;
@@ -9,8 +10,9 @@ use std::str::FromStr;
 use log;
 
 use binary_layout::prelude::*;
-use chrono::{NaiveDate};
+use chrono::{Datelike, NaiveDate};
 use thiserror::Error;
+use crate::xbase::dbase_header::{last_updated, n_records};
 use crate::xbase::DBaseErrorKind::{InvalidLastUpdated, UnknownFieldType, UnknownLogicalValue};
 
 
@@ -26,6 +28,7 @@ define_layout!(dbase_header, LittleEndian, {
     last_updated: yymmdd::NestedView,
     n_records: u32,
     n_header_bytes: u16,
+    n_record_bytes: u16, // sum of lengths of each record field + 1
     _reserved1: [u8; 2],
     incomplete_transaction: u8,
     encrypted: u8,
@@ -89,7 +92,7 @@ define_layout!(clipper_index_entry, LittleEndian, {
     record_number: u32,  // in DBF
 });
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum FieldType {
     Character,
     Date,
@@ -99,7 +102,7 @@ pub enum FieldType {
     Numeric,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Copy, Clone)]
 pub struct Decimal {
     mantissa: i64,
     exponent: u32,
@@ -144,14 +147,16 @@ pub enum Field {
     Boolean(Option<bool>),
     Memo(Option<u64>),
     Numeric(Option<Decimal>),
+
+    NotImplemented,
 }
 
 #[allow(unused)]
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct FieldDescriptor {
-    pub name: String,
+    name: String,
     field_type: FieldType,
-    pub length: usize,
+    length: usize,
     decimal_count: u8,
     work_area_id: u16,
     example: u8,
@@ -212,6 +217,44 @@ impl FieldDescriptor {
         })
     }
 
+    fn to_bytes(&self, buf: &mut [u8]) -> DBaseResult<()> {
+        let mut view = field_descriptor::View::new(buf);
+        view.name_mut()[..11].copy_from_slice(
+            format!("{:11}", &self.name).as_bytes()
+        );
+        view.f_type_mut().write(match self.field_type {
+            FieldType::Character => { b'C' }
+            FieldType::Date => { b'D' }
+            FieldType::Float => { b'F' }
+            FieldType::Boolean => { b'L' }
+            FieldType::Memo => { b'M' }
+            FieldType::Numeric => { b'N' }
+        });
+        view.length_mut().write(self.length as u8);
+        view.decimal_count_mut().write(self.decimal_count);
+        view.work_area_id_mut().write(self.work_area_id);
+        view.example_mut().write(self.example);
+        Ok(())
+    }
+
+    fn write_field(&self, field: &Field, w: &mut impl io::Write) -> DBaseResult<()> {
+        match field {
+            Field::Character(s) => { write!(w, "{s:<0$.0$}", self.length)?; }
+            Field::Float(f) => { write!(w, "{f:>0$}", self.length)?; }
+            Field::Boolean(Some(b)) => { w.write(if *b {&[b'T']} else {&[b'F']})?; }
+            Field::Numeric(Some(n)) => { write!(w, "{n:>0$}", self.length)?; }
+            Field::Memo(Some(id)) => { write!(w, "{id:>10}")?; }
+
+            Field::Boolean(None) => {}
+            Field::Numeric(None) => {}
+            Field::Memo(None) => {}
+            Field::Date(_) => {}
+            Field::NotImplemented => {}
+        };
+
+        Ok(())
+    }
+
     pub fn read_field(&self, data: &[u8]) -> DBaseResult<Field> {
         let val = data_to_string(&data[0..self.length]);
         match self.field_type {
@@ -219,7 +262,7 @@ impl FieldDescriptor {
                 Ok(Field::Character(val))
             }
             FieldType::Date => {
-                Ok(Field::Memo(None))
+                Ok(Field::NotImplemented)
             }
             FieldType::Float => {
                 Ok(Field::Float(f64::from_str(&val)?))
@@ -273,29 +316,148 @@ impl FieldDescriptor {
     }
 }
 
+/// Holds information read from a DBase table header or needed to write one.
 #[allow(unused)]
 #[derive(Debug)]
-pub struct DBaseTable {
+struct DBaseTable {
     last_updated: NaiveDate,
     flags: u8,
-    pub fields: Vec<FieldDescriptor>,
-    pub n_records: usize,
+    fields: Vec<FieldDescriptor>,
+    n_records: usize,
 }
 
+pub struct TableWriter<S: TableWriterState> {
+    table: Box<DBaseTable>,
+    state: S,
+}
+
+impl<W> TableWriter<Header<W>>
+    where W: io::Write
+{
+    pub fn new(mut writer: W) -> DBaseResult<Self> {
+        let table = DBaseTable {
+            last_updated: chrono::Utc::now().naive_utc().date(),
+            flags: 0b0000_0011, // magic found in my tables
+            fields: vec![],
+            n_records: 0,
+        };
+
+        Ok(TableWriter {
+            table: Box::new(table),
+            state: Header {
+                inner: writer,
+            },
+        })
+    }
+
+    pub fn add_field(&mut self, field: FieldDescriptor) {
+        self.table.fields.push(field);
+    }
+
+    pub fn add_fields<R>(&mut self, tr: &TableReader<Header<R>>) {
+        for f in &tr.table.fields {
+            self.table.fields.push(f.clone());
+        }
+    }
+
+    /// Write records.
+    ///
+    /// Each record must have the same number of fields,
+    /// and must match the order and type of the table's field descriptors.
+    pub fn write_records<I>(mut self, records: &[I]) -> DBaseResult<()>
+      where I: DBaseRecord
+    {
+        let mut data: [u8; 32] = [0; 32];
+        let mut view = dbase_header::View::new(&mut data);
+        let table = self.table;
+        let mut writer = self.state.inner;
+
+        let n_records = records.len() as u32;
+        let record_size = 1 + table.fields.iter().fold(0, |s, f| s + f.length) as u16;
+        log::info!("Record size: {record_size}");
+
+        // header
+        {
+            view.flags_mut().write(table.flags);
+            {
+                let mut last_updated = view.last_updated_mut();
+                last_updated.year_mut().write((table.last_updated.year() - 2000) as u8);
+                last_updated.month_mut().write(table.last_updated.month() as u8);
+                last_updated.day_mut().write(table.last_updated.day() as u8);
+            }
+            view.n_records_mut().write(n_records);
+            view.n_header_bytes_mut().write(
+                (table.fields.len() * 32 + 33) as u16
+            );
+            view.n_record_bytes_mut().write(record_size);
+            writer.write_all(&data)?;
+        }
+
+        // field descriptors
+        {
+            for f in &table.fields {
+                data.fill(0);
+                f.to_bytes(&mut data)?;
+                writer.write_all(&data)?;
+            }
+        }
+
+        // terminator byte
+        writer.write_all(&[0x0d])?;
+
+        // data
+        for r in records {
+            writer.write(&[0x20])?; // valid record
+            for (d, f) in zip(table.fields.iter(), r.to_record()) {
+                d.write_field(&f, &mut writer)?;
+            }
+        }
+
+        // End of File
+        writer.write_all(&[0x1a])?;
+
+        Ok(())
+    }
+
+}
+
+pub trait DBaseRecord {
+    fn to_record(&self) -> Vec<Field>;
+}
+
+/// A TableReader can be used to read a DBase table.
+///
+/// The state parameter tracks the current state of the reader.
+/// When created, it must read the table header information
+/// and will be in the Header state.
+///
+pub struct TableReader<S: TableReaderState> {
+    table: Box<DBaseTable>,
+    state: S,
+}
+
+/// These are marker traits implemented by table reader/writer states.
 pub trait TableReaderState {}
 
+pub trait TableWriterState {}
+
+/// Header<R> is the initial state of a TableReader or TableWriter.
 pub struct Header<R> {
     inner: R,
 }
 
 impl<R> TableReaderState for Header<R> {}
-impl<R: io::Read> TableReaderState for Records<R> {}
 
+impl<R> TableWriterState for Header<R> {}
 
-pub struct TableReader<S: TableReaderState> {
-    table: Box<DBaseTable>,
-    state: S,
+pub struct Writing<W> {
+    inner: W,
 }
+
+impl<W: io::Write + io::Seek> TableWriterState for Writing<W> {}
+
+/// There are no extra methods while in the Records state.
+impl<R: io::Read> TableReaderState for Records<R> {}
 
 pub fn try_from_path<P: AsRef<Path>>(path: P) -> DBaseResult<TableReader<Header<impl io::Read>>> {
     let file = File::open(path)?;
@@ -316,6 +478,7 @@ impl<S: TableReaderState> TableReader<S> {
 impl<R> TableReader<Header<R>>
     where R: io::Read
 {
+    /// Create a new TableReader which reads data from R.
     pub fn new(mut reader: R) -> DBaseResult<Self> {
         let mut data: [u8; 32] = [0; 32];
         reader.read_exact(&mut data)?;
@@ -362,22 +525,24 @@ impl<R> TableReader<Header<R>>
         })
     }
 
+    /// Begin reading records from the TableReader.
     pub fn records<'a>(self) -> TableReader<Records<R>> {
         let record_size = 1 + self.table.fields.iter().fold(0, |s, f| s + f.length);
         log::info!("Record size: {record_size}");
 
-        TableReader{
+        TableReader {
             table: self.table,
             state: Records {
                 record_size,
                 cur_record: 0,
                 inner: self.state.inner,
-            }
+            },
         }
     }
 }
 
-
+/// When a Reader is in the Records state,
+/// you can iterate over the table's records.
 #[derive(Debug)]
 pub struct Records<R: io::Read> {
     inner: R,
@@ -385,6 +550,7 @@ pub struct Records<R: io::Read> {
     cur_record: usize,
 }
 
+/// An iterator over the fields of a single record.
 #[derive(Debug)]
 pub struct FieldIterator<'a> {
     table: &'a DBaseTable,
@@ -393,14 +559,18 @@ pub struct FieldIterator<'a> {
     cur_byte: usize,
 }
 
+/// A single value read from a single record.
 #[derive(Debug)]
 pub struct FieldValue<'a> {
     pub name: &'a str,
     pub value: Field,
 }
 
+/// While in the Records state, you can iterate over the table records.
 impl<R: io::Read> TableReader<Records<R>>
 {
+    /// Return Some(FieldIterator) over the next record,
+    /// or None if there are no more records.
     pub fn next(&mut self) -> Option<DBaseResult<FieldIterator>> {
         const DELETED: u8 = 0x2a;
 
@@ -433,6 +603,8 @@ impl<R: io::Read> TableReader<Records<R>>
 impl<'a> Iterator for FieldIterator<'a> {
     type Item = DBaseResult<FieldValue<'a>>;
 
+    /// Return Some(FieldValue) from the current record,
+    /// or None if there are no more fields.
     fn next(&mut self) -> Option<Self::Item> {
         if self.cur_field == self.table.fields.len() {
             return None;

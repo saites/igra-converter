@@ -12,11 +12,11 @@ use std::cmp::Ordering;
 use std::rc::Rc;
 use phf::phf_map;
 
-use crate::bktree;
+use crate::{bktree, xbase};
 use crate::bktree::BKTree;
 use crate::robin::{Event, EventID, Registration};
 use crate::robin::EventID::Known;
-use crate::xbase::{DBaseResult, Decimal, Field, Header, TableReader};
+use crate::xbase::{DBaseRecord, DBaseResult, Decimal, Field, Header, TableReader};
 
 pub fn read_reg<P: AsRef<std::path::Path>>(path: P) -> Result<Vec<Registration>, Box<dyn Error>> {
     Ok(serde_json::from_reader(BufReader::new(File::open(path)?))?)
@@ -387,7 +387,7 @@ impl<'a> EntryValidator<'a> {
 
             let partners = confirmed_partners.iter().flat_map(|(person, events)| {
                 events.iter().map(|(event, round)| {
-                    Partner{
+                    Partner {
                         igra_number: &person.igra_number,
                         event: *event,
                         round: *round,
@@ -831,6 +831,7 @@ pub struct PersonRecord {
     pub ext_dollars: Decimal,
 }
 
+
 /// Hash implementation for PersonRecord: two records are equivalent if they have the same IGRA number.
 /// Note that this logic only holds if PersonRecords are indeed unique by this identifier.
 impl std::hash::Hash for PersonRecord {
@@ -933,6 +934,7 @@ pub fn read_personnel<R: io::Read>(table: TableReader<Header<R>>) -> DBaseResult
                 ("ADDRESS", Field::Character(s)) => person.address = s,
                 ("CITY", Field::Character(s)) => person.city = s,
                 ("STATE", Field::Character(s)) => person.state = s,
+                ("ZIP", Field::Character(s)) => person.zip = s,
                 ("HOME_PHONE", Field::Character(s)) => person.home_phone = s,
                 ("CELL_PHONE", Field::Character(s)) => person.cell_phone = s,
                 ("E_MAIL", Field::Character(s)) => person.email = s,
@@ -941,16 +943,51 @@ pub fn read_personnel<R: io::Read>(table: TableReader<Header<R>>) -> DBaseResult
                 ("LASTUPDATE", Field::Character(s)) => person.last_updated = s,
                 ("SORT_DATE", Field::Character(s)) => person.sort_date = s,
                 ("EXT_DOLLAR", Field::Numeric(Some(n))) => person.ext_dollars = n,
-                _ => {}
+                ("EXT_DOLLAR", Field::Numeric(None)) => {},
+                (n, v) => {
+                    panic!("Unknown field: {n} with value '{v:?}'");
+                }
             }
         }
 
+        // TODO: add "full name" fields to the record & create them manually.
         people.push(person);
     }
 
     people.sort_by(|a, b| a.igra_number.cmp(&b.igra_number));
     Ok(people)
 }
+
+impl DBaseRecord for PersonRecord {
+    fn to_record(&self) -> Vec<Field> {
+        vec![
+            Field::Character(self.igra_number.clone()),
+            Field::Character(self.association.clone()),
+            Field::Character(self.birthdate.clone()),
+            Field::Character(self.ssn.clone()),
+            Field::Character(self.division.clone()),
+            Field::Character(self.last_name.clone()),
+            Field::Character(self.first_name.clone()),
+            Field::Character(self.legal_last.clone()),
+            Field::Character(self.legal_first.clone()),
+            Field::Character(self.id_checked.clone()),
+            Field::Character(self.sex.clone()),
+            Field::Character(self.address.clone()),
+            Field::Character(self.city.clone()),
+            Field::Character(self.state.clone()),
+            Field::Character(self.zip.clone()),
+            Field::Character(self.home_phone.clone()),
+            Field::Character(self.cell_phone.clone()),
+            Field::Character(self.email.clone()),
+            Field::Character(self.status.clone()),
+            Field::Character(self.first_rodeo.clone()),
+            Field::Character(self.last_updated.clone()),
+            Field::Character(self.sort_date.clone()),
+            Field::Numeric(Some(self.ext_dollars.clone())),
+        ]
+    }
+}
+
 
 /// Read event records from a DBF table.
 fn read_rodeo_events<R: io::Read>(table: TableReader<Header<R>>) -> DBaseResult<Vec<RegistrationRecord>> {

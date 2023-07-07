@@ -25,15 +25,20 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     // let pp = env::current_dir().unwrap().as_path().join(&personnel_path).canonicalize().unwrap();
     log::debug!("Personnel File: {personnel_path}, Registration File: {reg_path}");
+    let personnel_path = "./my_db.dbf";
 
     let reg = validation::read_reg(reg_path)?;
-    log::debug!("Registration File:\n{:#?}", reg);
+    // log::debug!("Registration File:\n{:#?}", reg);
 
     let dbt = xbase::try_from_path(personnel_path)?;
+    // let mut tw = xbase::TableWriter::new(BufWriter::new(File::create("./my_db2.dbf")?))?;
+    // tw.add_fields(&dbt);
     let people = validation::read_personnel(dbt)?;
 
     log::info!("Number of people in personnel database: {}", people.len());
     log::info!("Number of entries JSON file: {}", reg.len());
+
+    // tw.write_records(&people)?;
 
     let validator = EntryValidator::new(&people);
     let report = validator.validate_entries(&reg);
