@@ -22,32 +22,19 @@
 
 <body>
 <div id="app">
-  <my-grid
-      :results="registrationData?.results"
-      :relevant="registrationData?.relevant"
-  >
-  </my-grid>
+  <app></app>
 </div>
 
 <script type="module">
-import MyGrid from './Grid.js'
-import { createApp, ref, watchEffect } from 'vue'
-
-const url = "./validation_output.json"
+import App from './app.js'
+import { createApp} from 'vue'
 
 createApp({
   components: {
-    MyGrid,
+    App,
   },
   setup() {
-    const registrationData = ref(null)
-
-    watchEffect(async () => {
-      registrationData.value = await (await fetch(url)).json()
-    })
-
     return {
-      registrationData,
     }
   }
 }).mount('#app')
