@@ -18,6 +18,7 @@ eddie = "0.4"
 itertools = "0.11"
 csv = "1.2.2"
 phf = { version = "0.11.2", features = ["macros"] }
+rand = "0.8.5"
 
 [profile.release]
 lto = true

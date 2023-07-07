@@ -6,7 +6,7 @@ use crate::validation::RodeoEvent;
 #[serde(rename_all(deserialize = "camelCase"))]
 pub struct Registration {
     #[serde(skip_serializing)]
-    id: u64,
+    pub id: u64,
     pub stalls: String,
     // Should probably be an integer.
     pub contestant: Contestant,
