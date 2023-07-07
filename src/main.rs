@@ -65,48 +65,68 @@ fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-/*
-fn generate_fake_reg(n: usize) -> Result<Vec<Registration>, Box<dyn Error>> {
-    let db = generate_fake_db(n)?;
-
+fn generate_fake_reg(db: Vec<PersonRecord>, n: usize) -> Result<Vec<Registration>, Box<dyn Error>> {
     let mut rng = thread_rng();
     let mut res = Vec::with_capacity(n);
+
+    let event_names = vec![]; // TODO
 
     for _ in 0..n {
         let r = db.choose(&mut rng).unwrap();
 
+        // TODO: decide if this should be a bad record
+        // TODO 
+        let events = vec![
+            robin::Event{
+                id: event_names.choose(&mut rng).unwrap(),
+                partners: vec![],
+                round: 1,
+            },
+        ];
+        let payment = Payment { total: events.len() * 30 };
+
+        let perf_name = format!(
+            "{} {}", r.first_name, r.last_name
+            );
+        let dob_y = r.birthdate[:4].parse<u16>();
+        let dob_m = r.birthdate[4:6].parse<u8>();
+        let dob_d = r.birthdate[6:].parse<u8>();
+
         let pr = Registration{
-            id: 0,
+            id: rng.gen(),
             stalls: "".to_string(),
             contestant: Contestant {
-                first_name: r.first_name.clone(),
-                last_name: r.last_name.clone(),
-                performance_name: "".to_string(),
+                first_name: r.legal_first.clone(),
+                last_name: r.legal_last.clone(),
+                performance_name: perf_name, 
                 dob: Date {
-                    year: 0,
-                    month: 0,
-                    day: 0,
+                    year: dob_y,
+                    month: dob_m,
+                    day: dob_d,
                 },
                 age: 0,
-                gender: "".to_string(),
-                is_member: "".to_string(),
-                ssn: "".to_string(),
+                gender: if r.sex == "M" { "Cowboys".to_string() } else { "Cowgirls".to_string() },
+                is_member: "Yes".to_string(),
+                ssn: r.ssn.clone(), 
                 note_to_director: "".to_string(),
                 address: Address {
-                    email: "".to_string(),
-                    address_line_1: "".to_string(),
+                    email: r.email.clone(),
+                    address_line_1: r.address.clone(), 
                     address_line_2: "".to_string(),
-                    city: "".to_string(),
-                    region: "".to_string(),
-                    country: "".to_string(),
-                    zip_code: "".to_string(),
-                    cell_phone_no: "".to_string(),
-                    home_phone_no: "".to_string(),
+                    city: r.city.clone(),
+                    region: r.state.clone(), 
+                    country: "United States".to_string(),
+                    zip_code: r.zip.clone(), 
+                    cell_phone_no: r.cell_phone.clone(), 
+                    home_phone_no: r.home_phone.clone(), 
                 },
-                association: Association { igra: "".to_string(), member_assn: "".to_string() },
+                association: Association { 
+                    igra: r.igra_number.clone(), 
+                    member_assn: r.association.clone(), 
+                },
             },
-            events: vec![],
-            payment: Payment {},
+            events,
+            payment,
         }
         res.push(pr);
     }
@@ -114,7 +134,6 @@ fn generate_fake_reg(n: usize) -> Result<Vec<Registration>, Box<dyn Error>> {
 
     Ok(res)
 }
- */
 
 fn generate_fake_db(n: usize) -> Result<Vec<PersonRecord>, Box<dyn Error>> {
     let first_names: Vec<_> = BufReader::new(
