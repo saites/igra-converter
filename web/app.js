@@ -58,7 +58,7 @@ export default {
               // body: JSON.stringify(generationOptions.value),
             });
 
-            registrationData.value = JSON.stringify(await response.json())
+            registrationData.value = JSON.stringify(await response.json(), null, 2)
             // validating.value = true;
           } catch(error) {
             errMessage.value = "Error: " + error;
@@ -69,6 +69,10 @@ export default {
         }, { immediate: true }
     )
 
+    const btn = ref(
+        'rounded-med bg-indigo-500 hover:bg-indigo-600 text-white p-2'
+    )
+
     return {
       registrationData,
       validationResult,
@@ -77,21 +81,28 @@ export default {
       generating,
       validate,
       generate,
+        btn,
     }
   },
   template: `
-<div>
-  <section>
-      <textarea :disabled="generating || validating" v-model="registrationData"></textarea>
-      <div>
-        <button :disabled="generating || validating" @click="generate">Generate</button>
-        <button :disabled="generating || validating" @click="validate">Validate</button>
+<div class="flex flex-col items-center">
+  <section class="w-5/6">
+      <textarea 
+      class="w-full h-96"
+      :disabled="generating || validating" v-model="registrationData"></textarea>
+      <div class="flex justify-evenly">
+        <button 
+        :class="btn"
+        :disabled="generating || validating" @click="generate">Generate</button>
+        <button 
+        :class="btn"
+        :disabled="generating || validating" @click="validate">Validate</button>
       </div>
   </section>
   <div v-if="errMessage">
       {{errMessage}}
   </div>
-  <my-grid v-else
+  <my-grid v-else class="w-5/6"
       :results="validationResult?.results"
       :relevant="validationResult?.relevant"
   >
