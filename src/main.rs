@@ -10,13 +10,17 @@ use std::io::{BufRead, BufReader, BufWriter};
 use std::io::Write;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
+use std::path::PathBuf;
 
 use axum::response::IntoResponse;
+use axum_server::tls_rustls::RustlsConfig;
 use axum::{
-    routing::{post},
-    http::{StatusCode, header},
-    Json, Router, 
-    extract::State,
+    extract::{Host, State},
+    handler::HandlerWithoutStateExt,
+    http::{StatusCode, Uri, header},
+    response::Redirect,
+    routing::{get, post},
+    Json, Router, BoxError,
 };
 use log;
 use rand::prelude::*;
@@ -114,6 +118,20 @@ async fn do_serve(
     let state = AppState::new(people);
     let socket = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), port);
 
+    let config = if port == 443 {
+      tokio::spawn(redirect_http_to_https(80, port));
+
+        Some(
+            RustlsConfig::from_pem_file(
+//                 PathBuf::from("./certs/domain.cert.pem"),
+                PathBuf::from("./certs/intermediate.cert.pem"),
+                PathBuf::from("./certs/private.key.pem"),
+            )
+            .await
+            .unwrap()
+        )
+    } else { None };
+
     let routes = Router::new()
         .nest_service("/", ServeDir::new("./web"))
         .route("/validate", post(handle_validate))
@@ -122,12 +140,55 @@ async fn do_serve(
         .fallback(handle_404);
 
     log::info!("Running on {socket}.");
-    axum::Server::bind(&socket)
-        .serve(routes.into_make_service())
-        .await
-        .expect("server failed to start");
+    if let Some(config) = config {
+        axum_server::bind_rustls(socket, config)
+            .serve(routes.into_make_service())
+            .await
+            .expect("server failed to start");
+    } else {
+        axum::Server::bind(&socket)
+            .serve(routes.into_make_service())
+            .await
+            .expect("server failed to start");
+    }
 
     Ok(())
+}
+
+async fn redirect_http_to_https(http_port: u16, https_port: u16) {
+    fn make_https(host: String, uri: Uri, http_port: u16, https_port: u16) -> Result<Uri, BoxError> {
+        let mut parts = uri.into_parts();
+
+        parts.scheme = Some(axum::http::uri::Scheme::HTTPS);
+        if parts.path_and_query.is_none() {
+            parts.path_and_query = Some("/".parse().unwrap());
+        }
+
+        let https_host = host.replace(&http_port.to_string(), &https_port.to_string());
+        parts.authority = Some(https_host.parse()?);
+
+        Ok(Uri::from_parts(parts)?)
+    }
+
+    let redirect = move |Host(host): Host, uri: Uri| async move {
+        match make_https(host, uri, http_port, https_port) {
+            Ok(uri) => Ok(Redirect::permanent(&uri.to_string())),
+            Err(error) => {
+                log::warn!("failed to convert URI to HTTPS: {:?}", error);
+                Err(StatusCode::BAD_REQUEST)
+            }
+        }
+    };
+
+    // let addr = SocketAddr::from(([0, 0, 0, 0], http_port));
+    // let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
+    let socket = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), http_port);
+
+    log::debug!("listening on {}", &socket);
+    axum::Server::bind(&socket)
+        .serve(redirect.into_make_service())
+        .await
+        .expect("server failed to start");
 }
 
 async fn handle_404() -> &'static str {
