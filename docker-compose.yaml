@@ -1,0 +1,40 @@
+version: '3.7'
+
+
+services:
+  api-server:
+    build:
+      context: .
+    restart: "no"
+    environment:
+      RUSTLOG: "info"
+      RUSTLOG_STYLE: "always"
+    ports:
+      - "8080:80"
+      - "8443:443"
+    volumes:
+      - "./src:/usr/src/project/src"
+      - "./dtarget:/usr/src/project/target"
+      - "./Cargo.toml:/usr/src/project/Cargo.toml"
+      - "./Cargo.lock:/usr/src/project/Cargo.lock"
+      - "./data:/usr/src/project/data"
+    init: true
+    working_dir: '/usr/src/project'
+    user: "${SERVICE_UID:-1000}:${SERVICE_GID:-100}"
+    command: cargo run serve ./data/random-data.dbf 443
+    environment:
+      RUST_LOG: "info,converter=debug,axum=debug"
+      CARGO_BUILD_DEP_INFO_BASEDIR: "."
+
+  vite:
+    image: node:18
+    volumes:
+      - "./web:/code"
+    working_dir: "/code/converter-app"
+    user: "${SERVICE_UID:-1000}:${SERVICE_GID:-100}"
+    ports:
+      - "8081:5173"
+    init: true
+    command: "tail /dev/null"
+    # command: "bash -c 'npm install && npm run dev'"
+
