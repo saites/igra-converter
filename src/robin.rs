@@ -31,8 +31,8 @@ pub struct Contestant {
     pub dob: Date,
     pub age: u8,
     pub gender: String,
-    pub is_member: String,
     // Should probably be a boolean.
+    pub is_member: String,
     pub ssn: String,
     pub note_to_director: String,
     pub address: Address,
@@ -43,7 +43,7 @@ impl Contestant {
     /// Get this contestant's last 4 SSN/SSI string
     /// formatted to match the old DOS system.
     pub fn dos_ssn(&self) -> String {
-        format!("XXX-XX-{}", self.ssn)
+        format!("XXX-XX-{:04}", self.ssn)
     }
 }
 
