@@ -53,6 +53,9 @@ const partnerInfo = computed(() => {
     return p.event === event.rodeoEventRelId && p.round === event.round
   });
 
+  // TODO: this logic is buggy and misassociated some people.
+  // Need to either move the logic over to the server,
+  // or figure out what's broken here.
   // match the user value to the correct partner.
   return event.partners.map((nameOrNum) => {
     let lowerNN = nameOrNum.trim().toLowerCase()
@@ -85,12 +88,10 @@ function formatPartner(p) {
     <td>{{event.round}}</td>
     <td>{{event.partners[0]}}</td>
     <td>{{event.partners[1]}}</td>
-    <td>{{event.partners[2]}}</td>
   </tr>
   <tr :class="bgColor" class="text-left text-sm" v-for="issue in theseIssues">
-    <td colspan="5" class="">
-    → {{problemName(issue)}}
-    {{suggestedFix(issue)}}
+    <td colspan="4">
+      → <span>{{problemName(issue)}}</span> <span>{{suggestedFix(issue)}}</span>
     </td>
   </tr>
   <tr>
@@ -100,11 +101,8 @@ function formatPartner(p) {
     <td v-else></td>
     <td v-if="partnerInfo[1]">Match: {{formatPartner(partnerInfo[1])}}</td>
     <td v-else></td>
-    <td v-if="partnerInfo[2]">Match: {{formatPartner(partnerInfo[2])}}</td>
-    <td v-else></td>
   </tr>
   <tr>
-    <td></td>
     <td></td>
     <td></td>
     <td></td>

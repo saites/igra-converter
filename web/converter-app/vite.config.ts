@@ -10,6 +10,10 @@ export default defineConfig({
   server: {
     host: "0.0.0.0",
     origin: "http://localhost:8081",
+    proxy: {
+      '/validate': 'http://192.168.4.121:8080',
+      '/generate': 'http://192.168.4.121:8080',
+    },
     headers: {
       "X-Content-Type-Options": ["nosniff"],
     },

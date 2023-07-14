@@ -7,8 +7,9 @@ services:
       context: .
     restart: "no"
     environment:
-      RUSTLOG: "info"
-      RUSTLOG_STYLE: "always"
+      RUST_LOG: "info,converter=debug,axum=debug"
+      RUST_LOG_STYLE: "always"
+      CARGO_BUILD_DEP_INFO_BASEDIR: "."
     ports:
       - "8080:80"
       - "8443:443"
@@ -22,9 +23,6 @@ services:
     working_dir: '/usr/src/project'
     user: "${SERVICE_UID:-1000}:${SERVICE_GID:-100}"
     command: cargo run serve ./data/random-data.dbf 443
-    environment:
-      RUST_LOG: "info,converter=debug,axum=debug"
-      CARGO_BUILD_DEP_INFO_BASEDIR: "."
 
   vite:
     image: node:18

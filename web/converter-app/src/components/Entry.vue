@@ -93,7 +93,6 @@ const maybeMatches = computed(() => {
 
 <template>
   <article>
-    <div>
     <section>
       <header class="text-lg">Registration Data</header>
 
@@ -151,9 +150,6 @@ const maybeMatches = computed(() => {
       </table>
     </section>
 
-    </div>
-
-
     <section>
       <header class="text-lg">Registered Events</header>
       <table class="table-auto">
@@ -163,7 +159,6 @@ const maybeMatches = computed(() => {
             <th>Round</th>
             <th>Partner 1</th>
             <th>Partner 2</th>
-            <th>Partner 3</th>
           </tr>
         </thead>
         <tbody>
@@ -177,8 +172,7 @@ const maybeMatches = computed(() => {
       </table>
     </section>
 
-
-    <section v-if="issues">
+    <section v-if="issues.length > 0">
       <header class="text-lg">Problems</header>
       <table class="table-auto">
         <thead>
@@ -199,7 +193,27 @@ const maybeMatches = computed(() => {
         </tbody>
       </table>
     </section>
-
   </article>
 </template>
+
+<style scoped>
+table {
+  border: 2px solid #42b983;
+  border-radius: 3px;
+  background-color: #fff;
+}
+
+th {
+  background-color: #42b983;
+  color: rgba(255, 255, 255, 0.66);
+}
+
+tr {
+  background-color: #f9f9f9;
+}
+
+article {
+  @apply grid grid-cols-1 justify-items-center ;
+}
+</style>
 

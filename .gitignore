@@ -3,7 +3,9 @@
 /certs
 /clipper-index
 *.dbf
+*.DBF
 notes.txt
 reg.json
+registration.json
 web-reg.csv
 
