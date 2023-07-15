@@ -282,22 +282,32 @@ fn generate_fake_reg(people: &Vec<PersonRecord>, n: usize) -> MyResult<Vec<Regis
     fn add_event(rng: &mut ThreadRng, events: &mut Vec<robin::Event>, rid: RodeoEvent, partners: Vec<String>) {
         // With high probability, register for this event twice.
         if rng.gen::<u8>() > 15 {
+            add_rounds(true, true, events, rid, partners);
+        } else {
+            // Otherwise randomly choose which round to register for.
+            if rng.gen() {
+                add_rounds(true, false, events, rid, partners);
+            } else {
+                add_rounds(false, true, events, rid, partners);
+            }
+        }
+    }
+
+    // This is separated from the above to make it easier to add events in a coordinated way.
+    fn add_rounds(round1: bool, round2:bool, events: &mut Vec<robin::Event>, rid: RodeoEvent, partners: Vec<String>) {
+        if round1 {
             events.push(robin::Event {
                 id: EventID::Known(rid),
                 partners: partners.clone(),
                 round: 1,
             });
+        }
+
+        if round2 {
             events.push(robin::Event {
                 id: EventID::Known(rid),
                 partners,
                 round: 2,
-            });
-        } else {
-            // Otherwise randomly choose which round to register for.
-            events.push(robin::Event {
-                id: EventID::Known(rid),
-                partners,
-                round: rng.gen_range(1..=2),
             });
         }
     }
@@ -400,8 +410,18 @@ fn generate_fake_reg(people: &Vec<PersonRecord>, n: usize) -> MyResult<Vec<Regis
             let (p2, ref mut r2) = in_event.next().unwrap();
             let p1_partners = vec![partner_name(&mut rng, p2)];
             let p2_partners = vec![partner_name(&mut rng, p1)];
-            add_event(&mut rng, &mut r1.events, *eid, p1_partners);
-            add_event(&mut rng, &mut r2.events, *eid, p2_partners);
+            if rng.gen::<u8>() > 15 {
+                add_rounds(true, true, &mut r1.events, *eid, p1_partners);
+                add_rounds(true, true, &mut r2.events, *eid, p2_partners);
+            } else {
+                if rng.gen() {
+                    add_rounds(false, true, &mut r1.events, *eid, p1_partners);
+                    add_rounds(false, true, &mut r2.events, *eid, p2_partners);
+                } else {
+                    add_rounds(true, false, &mut r1.events, *eid, p1_partners);
+                    add_rounds(true, false, &mut r2.events, *eid, p2_partners);
+                }
+            }
         }
     });
 
@@ -420,9 +440,21 @@ fn generate_fake_reg(people: &Vec<PersonRecord>, n: usize) -> MyResult<Vec<Regis
                 let cbp = vec![partner_name(&mut rng, cg.0), partner_name(&mut rng, d.0)];
                 let cgp = vec![partner_name(&mut rng, cb.0), partner_name(&mut rng, d.0)];
                 let dp = vec![partner_name(&mut rng, cb.0), partner_name(&mut rng, cg.0)];
-                add_event(&mut rng, &mut cb.1.events, RodeoEvent::WildDragRace, cbp);
-                add_event(&mut rng, &mut cg.1.events, RodeoEvent::WildDragRace, cgp);
-                add_event(&mut rng, &mut d.1.events, RodeoEvent::WildDragRace, dp);
+                if rng.gen::<u8>() > 15 {
+                    add_rounds(true, true, &mut cb.1.events, RodeoEvent::WildDragRace, cbp);
+                    add_rounds(true, true, &mut cg.1.events, RodeoEvent::WildDragRace, cgp);
+                    add_rounds(true, true, &mut d.1.events, RodeoEvent::WildDragRace, dp);
+                } else {
+                    if rng.gen() {
+                        add_rounds(false, true, &mut cb.1.events, RodeoEvent::WildDragRace, cbp);
+                        add_rounds(false, true, &mut cg.1.events, RodeoEvent::WildDragRace, cgp);
+                        add_rounds(false, true, &mut d.1.events, RodeoEvent::WildDragRace, dp);
+                    } else {
+                        add_rounds(true, false, &mut cb.1.events, RodeoEvent::WildDragRace, cbp);
+                        add_rounds(true, false, &mut cg.1.events, RodeoEvent::WildDragRace, cgp);
+                        add_rounds(true, false, &mut d.1.events, RodeoEvent::WildDragRace, dp);
+                    }
+                }
             }
             _ => break,
         }
