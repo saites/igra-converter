@@ -20,9 +20,9 @@ const order = [
 
   { id: "TeamRopingHeader", name: "Team Roping Header", solo: false,},
   { id: "TeamRopingHeeler", name: "Team Roping Heeler", solo: false,},
+  { id: "SteerDeco", name: "Steer Deco", solo: false,},
   { id: "WildDragRace", name: "Wild Drag Race", solo: false,},
   { id: "GoatDressing", name: "Goat Dressing", solo: false,},
-  { id: "SteerDeco", name: "Steer Deco", solo: false,},
 ]
 
 const isSolo = Object.fromEntries(order.map((o) => [o.id, o.solo]));
@@ -65,8 +65,8 @@ const partnerEvents = computed(() => {
 <template>
   <div class="item-grid">
     <th>Event</th>
-    <th>Round 1</th>
-    <th>Round 2</th>
+    <th>1st Go</th>
+    <th>2nd Go</th>
 
     <template v-for="e in info">
       <div class="item text-end">{{e.name}}</div>
@@ -74,15 +74,19 @@ const partnerEvents = computed(() => {
       <div class="item text-center">{{e.rounds[1] ? "X" : ""}}</div>
 
       <template v-if="e.partners[0].length > 0">
-        <div class="text-end">Round 1 Partner</div>
-        <div>{{e.partners[0][0] ?? ""}}</div>
-        <div>{{e.partners[0][1] ?? ""}}</div>
+        <div class="text-end col-span-3">
+          Go 1 Partners: 
+          {{e.partners[0][0] ?? "----"}},
+          {{e.partners[0][1] ?? "----"}}
+        </div>
       </template>
       
       <template v-if="e.partners[1].length > 0">
-        <div class="text-end">Round 1 Partner</div>
-        <div>{{e.partners[1][0] ?? ""}}</div>
-        <div>{{e.partners[1][1] ?? ""}}</div>
+        <div class="text-end col-span-3">
+          Go 2 Partners: 
+          {{e.partners[1][0] ?? "----"}},
+          {{e.partners[1][1] ?? "----"}}
+        </div>
       </template>
 
     </template>

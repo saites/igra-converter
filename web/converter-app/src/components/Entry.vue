@@ -153,7 +153,6 @@ const maybeMatches = computed(() => {
     </section>
 
     <section>
-      <header class="text-lg">Registered Events</header>
       <events-grid 
         :events=events
         :issues=issues

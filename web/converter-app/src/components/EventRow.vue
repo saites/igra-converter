@@ -81,82 +81,10 @@ function formatPartner(p) {
   return `${p.igra_number} ${p.first_name} ${p.last_name}`
 }
 
-const isSolo = {
-  "FlagRacing": true,
-  "ChuteDogging": true,
-  "CalfRopingOnFoot": true,
-  "SteerRiding": true,
-  "RanchSaddleBroncRiding": true,
-  "BullRiding": true,
-  "PoleBending": true,
-  // Team events
-  "TeamRopingHeader": false,
-  "TeamRopingHeller": false,
-  "WildDragRace": false,
-  "GoatDressing": false,
-  "SteerDeco": false,
-}
-
-function collectEvents(events, findSolo) {
-  return events.filter((e) => findSolo ^ !isSolo[e.rodeoEventRelId])
-    .reduce((acc, e) => {
-      const entry = acc[e.rodeoEventRelId] ?? {
-        "name": e.rodeoEventRelId,
-        "rounds": [],
-      }
-      entry.rounds.push(e.round)
-      acc[e.rodeoEventRelId] = entry
-      return acc
-    }, {})
-}
-
-const partnerEvents = computed(() => {
-  let { events } = props
-  if (!events) { return [] }
-  return collectEvents(events, false)
-})
-
-const soloEvents = computed(() => {
-  let { events } = props
-  if (!events) { return {} }
-  return collectEvents(events, true)
-})
 
 </script>
 
 <template>
-  <div class="grid grid-cols-4">
-      
-    <th>Event</th>
-    <th>Round</th>
-    <th>Partner 1</th>
-    <th>Partner 2</th>
-    
-    <header v-if="soloEvents.length > 0"
-      class="text-lg grid-col-span-4">Solo Events</header>
-
-    <div class="grid grid-cols-3" v-for="e in soloEvents">
-      <div>{{e.name}}</div>
-      <div>{{e.rounds[0] ? "X" : ""}}</div>
-      <div>{{e.rounds[1] ? "X" : ""}}</div>
-    </div>
-      
-      <header class="text-lg">Partner Events</header>
-      <div class="grid grid-cols-3" v-for="e in partnerEvents">
-        <div>{{e.name}}</div>
-        <div>{{e.rounds[0] ? "X" : ""}}</div>
-        <div>{{e.rounds[1] ? "X" : ""}}</div>
-      </div>
-  </div>
-
-      <table class="table-auto">
-        <thead>
-          <tr>
-          </tr>
-        </thead>
-        <tbody>
-        </tbody>
-      </table>
 
   <tr :class="bgColor" class="text-center">
     <td>{{event.rodeoEventRelId}}</td>
