@@ -2,6 +2,7 @@ mod xbase;
 mod bktree;
 mod robin;
 mod validation;
+mod api;
 
 use std::{env, io};
 use std::error::Error;
@@ -17,17 +18,19 @@ use axum_server::tls_rustls::RustlsConfig;
 use axum::{
     extract::{Host, State},
     handler::HandlerWithoutStateExt,
-    http::{StatusCode, Uri, header},
+    http::{HeaderValue, StatusCode, Uri, header},
     response::Redirect,
     routing::{post},
     Json, Router, BoxError,
 };
-use axum::http::HeaderValue;
+use axum_extra::extract::WithRejection;
+
 use log;
 use rand::prelude::*;
 use tower_http::services::ServeDir;
 use serde_json::json;
 
+use crate::api::ApiError;
 use crate::robin::{
     Address, Association, Contestant, Date, EventID, Payment, Registration,
 };
@@ -201,7 +204,7 @@ async fn handle_404() -> &'static str {
 /// On success, returns a JSON response of results.
 async fn handle_validate<'a>(
     State(state): State<AppState>,
-    Json(payload): Json<Vec<Registration>>,
+    WithRejection(Json(payload), _): WithRejection<Json<Vec<Registration>>, ApiError>,
 ) -> impl IntoResponse
 {
     let people = state.people.clone();

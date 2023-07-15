@@ -303,6 +303,7 @@ impl<'a> EntryValidator<'a> {
         db_event: RodeoEvent,
         relevant: &mut HashMap<&'a str, &'a PersonRecord>,
     ) {
+        // Remove empty partner strings.
         let partners: Vec<_> = event
             .partners
             .iter()
@@ -332,88 +333,72 @@ impl<'a> EntryValidator<'a> {
             Ordering::Equal => {}
         }
 
+        /// The interface asks for "PARTNER NAME | IGRA #",
+        /// so this split a partner string s into (Some(igra_number), name)
+        /// if the string starts or ends with digits, or (None, name) otherwise.
+        ///
+        /// The name portion will hold the (possibly empty) remaining string,
+        /// stripped of whitespace and '|'.
+        fn split_partner(s: &str) -> (Option<&str>, &str) {
+            let s = s.trim();
+
+            fn ignored(c: char) -> bool {
+                c == '|' || c.is_whitespace()
+            }
+
+            let name_start = s.find(|c: char| !c.is_ascii_digit());
+            let name_end = s.rfind(|c: char| !c.is_ascii_digit());
+            match (name_start, name_end) {
+                (Some(start), _) if start > 0 => {
+                    let (num, name) = s.split_at(start);
+                    (Some(num.trim()), name.trim_matches(ignored))
+                },
+                (_, Some(end)) if end < s.len() - 1 => {
+                    let (name, num) = s.split_at(end);
+                    (Some(num.trim()), name.trim_matches(ignored))
+                },
+                (None, None) => (Some(s), &""),
+                _ => (None, s.trim_matches(ignored)),
+            }
+        }
+
         for p in partners {
-            // The interface asks for "PARTNER NAME | IGRA #",
-            // intending for people to enter one or the other (if known),
-            // but we'll also handle the case where people take it literally
-            // and enter both with a a pipe between them.
-            //
-            // If it doesn't have a pipe, parse it as a number or consider it a name.
-            // If it has a pipe, split it at the pipe.
-            // If the left is a number, consider the right a name, or try the opposite.
-            // If neither looks like a number, then consider the original string the name.
-            //
-            // Though it's true for now, this logic relies on IGRA identifiers truly being numbers.
-            let (part_num, part_name) = match p.split_once('|') {
-                None => {
-                    // No pipe. Can it be parsed as a number?
-                    p.trim()
-                        .parse::<u64>()
-                        .map(|num| (Some(num), None))
-                        .unwrap_or((None, Some(p)))
-                }
-                Some((a, b)) => {
-                    // If one can be parsed as a number, let the other be the name.
-                    let num_first = a.trim().parse::<u64>().map(|num| (Some(num), Some(b)));
-                    let name_first = b.trim().parse::<u64>().map(|num| (Some(num), Some(a)));
-                    num_first.or(name_first).unwrap_or((None, Some(p)))
-                }
-            };
-            let part_num = part_num.map(|num| format!("{:04}", num));
+            let (part_num, part_name) = split_partner(p);
+            log::info!("Partner: {p:?} - Num: {:?} Name: {:?}", part_num, part_name);
 
-            // Search for members that closely match.
             let mut p_finder = DistCounter::<&PersonRecord>::new();
-            if let Some(ref part_num) = part_num {
-                let found = self
-                    .by_igra_num
-                    .find_by(1, |x| self.damlev.distance(part_num, &x.0.igra_number));
 
-                // Since they gave a number, we'll break early if we found the right record.
-                let mut exact = found.iter().filter(|(d, _)| *d == 0).take(2);
-                let perfect = exact.next();
-                let too_many = exact.next();
-                if perfect.is_some() && too_many.is_none() {
+            if let Some(ref part_num) = part_num {
+                if let Some((_, found)) = self.by_igra_num.find_closest(
+                    0, |x| self.damlev.distance(part_num, &x.0.igra_number)) {
+
                     // If they gave a name, too, make sure it matches the performance or legal name.
-                    let (_, candidate) = perfect.unwrap();
-                    let is_match = part_name.map_or(true, |part_name| {
-                        let perf_name =
-                            format!("{} {}", candidate.0.first_name, candidate.0.last_name);
-                        let legal_name =
-                            format!("{} {}", candidate.0.legal_first, candidate.0.legal_last);
-                        perf_name.eq_ignore_ascii_case(part_name.trim())
-                            || legal_name.eq_ignore_ascii_case(part_name.trim())
-                    });
+                    // If they only gave an IGRA number (and we matched it), then just take the match.
+                    let is_match = if part_name.is_empty() {
+                        true
+                    } else {
+                        // It's a little silly to create a new string just for this check.
+                        let perf_name = format!("{} {}", found.0.first_name, found.0.last_name);
+                        let legal_name = format!("{} {}", found.0.legal_first, found.0.legal_last);
+                        perf_name.trim_end().eq_ignore_ascii_case(part_name)
+                            || legal_name.trim_end().eq_ignore_ascii_case(part_name)
+                    };
 
                     if is_match {
-                        match proc.confirmed_partners.entry(candidate.0) {
-                            hash_map::Entry::Occupied(mut e) => {
-                                e.get_mut().push((db_event, event.round));
-                            }
-                            hash_map::Entry::Vacant(e) => {
-                                e.insert(vec![(db_event, event.round)]);
-                            }
-                        }
+                        proc.confirm(found.0, db_event, event.round);
                         continue;
-                    } else {
-                        // Not a name match, but at least the number is right.
-                        proc.issues.push(Suggestion {
-                            problem: Problem::UnknownPartner {
-                                event: db_event,
-                                round: event.round,
-                            },
-                            fix: Fix::UseThisRecord(IGRANumber(candidate.0.igra_number.clone())),
-                        });
-                        relevant.insert(&candidate.0.igra_number, candidate.0);
                     }
                 }
 
                 // Otherwise, we'll need to make a suggestion.
-                found.into_iter().for_each(|(d, r)| p_finder.insert(d, r.0));
+                self.by_igra_num
+                    .find_by(1, |x| self.damlev.distance(part_num, &x.0.igra_number))
+                    .into_iter().for_each(|(d, r)| p_finder.insert(d, r.0));
             }
 
             // Either we didn't have a number to go on, or it didn't match,
             // so search for close matches by comparing the name.
-            if let Some(part_name) = part_name {
+            if !part_name.is_empty() {
                 let search_dist = 3;
 
                 // Assume we can split it into two parts.
@@ -422,56 +407,40 @@ impl<'a> EntryValidator<'a> {
                 let first = first.trim().to_ascii_uppercase();
                 let last = last.trim().to_ascii_uppercase();
                 self.by_first_name
-                    .find_by(search_dist, |x| {
-                        self.damlev.distance(&first, &x.0.legal_first)
-                    })
-                    .into_iter()
-                    .for_each(|(d, r)| p_finder.insert(d, r.0));
+                    .find_by(search_dist, |x| self.damlev.distance(&first, &x.0.legal_first))
+                    .into_iter().for_each(|(d, r)| p_finder.insert(d, r.0));
                 self.by_last_name
-                    .find_by(search_dist, |x| {
-                        self.damlev.distance(&last, &x.0.legal_last)
-                    })
-                    .into_iter()
-                    .for_each(|(d, r)| p_finder.insert(d, r.0));
+                    .find_by(search_dist, |x| self.damlev.distance(&last, &x.0.legal_last))
+                    .into_iter().for_each(|(d, r)| p_finder.insert(d, r.0));
                 self.by_perf_first
-                    .find_by(search_dist, |x| {
-                        self.damlev.distance(&first, &x.0.first_name)
-                    })
-                    .into_iter()
-                    .for_each(|(d, r)| p_finder.insert(d, r.0));
+                    .find_by(search_dist, |x| self.damlev.distance(&first, &x.0.first_name))
+                    .into_iter().for_each(|(d, r)| p_finder.insert(d, r.0));
                 self.by_perf_last
                     .find_by(search_dist, |x| self.damlev.distance(&last, &x.0.last_name))
-                    .into_iter()
-                    .for_each(|(d, r)| p_finder.insert(d, r.0));
+                    .into_iter().for_each(|(d, r)| p_finder.insert(d, r.0));
             }
 
             let possible: Vec<_> = p_finder
                 .best(3, Some(8))
                 .into_iter()
                 .map(|(p, _)| p)
+                .take(15)
                 .collect();
 
             // See if we have a single, exact match.
-            if let Some(ref part_name) = part_name {
+            if !part_name.is_empty() {
                 let mut maybe_partners = possible.iter().filter(|candidate| {
                     let perf_name = format!("{} {}", candidate.first_name, candidate.last_name);
                     let legal_name = format!("{} {}", candidate.legal_first, candidate.legal_last);
 
-                    perf_name.eq_ignore_ascii_case(part_name.trim())
-                        || legal_name.eq_ignore_ascii_case(part_name.trim())
+                    perf_name.trim().eq_ignore_ascii_case(part_name)
+                        || legal_name.trim().eq_ignore_ascii_case(part_name)
                 });
                 let first = maybe_partners.next();
                 let second = maybe_partners.next();
 
                 if first.is_some() && second.is_none() {
-                    match proc.confirmed_partners.entry(first.unwrap()) {
-                        hash_map::Entry::Occupied(mut e) => {
-                            e.get_mut().push((db_event, event.round));
-                        }
-                        hash_map::Entry::Vacant(e) => {
-                            e.insert(vec![(db_event, event.round)]);
-                        }
-                    }
+                    proc.confirm(first.unwrap(), db_event, event.round);
                     continue;
                 }
             }
@@ -663,7 +632,7 @@ impl<'a> EntryValidator<'a> {
             );
 
         // Compare phone numbers by stripping all non-digit characters.
-        macro_rules! check_phone(
+        macro_rules! check_phone (
             ($field:expr, $lval:expr, $rval:expr) => (
                 let mut lphone = $lval.clone();
                 lphone.retain(|c| c.is_ascii_digit());
@@ -719,7 +688,7 @@ impl<'a> EntryValidator<'a> {
             match m.region() {
                 Some(db_region) => {
                     check!(RegF::Region, db_region, who.address.region)
-                },
+                }
                 _ => proc.issues.push(Suggestion {
                     problem: Problem::DbMismatch {
                         field: RegF::Region,
@@ -773,6 +742,21 @@ impl<'a> Processed<'a> {
             issues: vec![],
             partners: vec![],
             confirmed_partners: HashMap::default(),
+        }
+    }
+
+    /// Add a confirmed partner.
+    ///
+    /// This updates the confirmed_partners map,
+    /// which is used only while working on validating a record.
+    fn confirm(&mut self, partner: &'a PersonRecord, event: RodeoEvent, round: u64) {
+        match self.confirmed_partners.entry(partner) {
+            hash_map::Entry::Occupied(mut e) => {
+                e.get_mut().push((event, round));
+            }
+            hash_map::Entry::Vacant(e) => {
+                e.insert(vec![(event, round)]);
+            }
         }
     }
 }

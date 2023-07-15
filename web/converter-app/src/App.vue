@@ -21,74 +21,70 @@ const validationResult = ref(null)
 const errMessage = ref(null)
 const validating = ref(false)
 const generating = ref(false)
+const editArea = ref(null)
+const highlightArea = ref(null)
+const highlightHeight = ref(null)
 
-function validate() {
+onMounted(() => {
+  highlightHeight.value = editArea.style?.height
+})
+
+async function validate() {
+  errMessage.value = null; 
   validating.value = true;
+    try {
+      const response = await fetch(`${BASE_URL}/validate`, {
+        method: "POST",
+        cache: "no-cache", 
+        headers: {
+          "Content-Type": "application/json",
+        },
+        referrerPolicy: "no-referrer", 
+        body: registrationData.value,
+      });
+
+      if (!response.ok) {
+        const errObj = await response.json();
+        throw new Error(errObj["error"])
+      } 
+
+      validationResult.value = await response.json()
+    } catch(error) {
+      errMessage.value = "" + error;
+      validationResult.value = null; 
+    }
+     
+    validating.value = false;
 }
 
-function generate() {
+async function generate() {
+  errMessage.value = null; 
   generating.value = true;
+  try {
+    const response = await fetch(`${BASE_URL}/generate`, {
+      method: "POST",
+      cache: "no-cache", 
+      headers: {
+        "Content-Type": "application/json",
+      },
+      referrerPolicy: "no-referrer", 
+      // body: JSON.stringify(generationOptions.value),
+    });
+
+    if (!response.ok) {
+      const errObj = await response.json();
+      throw new Error(errObj["error"])
+    } 
+    
+    registrationData.value = JSON.stringify(await response.json(), null, 2)
+    await validate();
+  } catch(error) {
+    errMessage.value = "" + error;
+    registrationData.value = ""; 
+  }
+   
+  generating.value = false;
 }
-
-function escapeHTML(html) {
-  return html
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#x27;')
-}
-
-watch(validating,
-    async () => {
-      try {
-        const response = await fetch(`${BASE_URL}/validate`, {
-          method: "POST",
-          cache: "no-cache", 
-          headers: {
-            "Content-Type": "application/json",
-          },
-          referrerPolicy: "no-referrer", 
-          body: registrationData.value,
-        });
-
-        validationResult.value = await response.json()
-      } catch(error) {
-        errMessage.value = "Error: " + error;
-        validationResult.value = null; 
-      }
-       
-       validating.value = false;
-    }, { immediate: false }
-)
-
-watch(generating,
-    async () => {
-      try {
-        const response = await fetch(`${BASE_URL}/generate`, {
-          method: "POST",
-          cache: "no-cache", 
-          headers: {
-            "Content-Type": "application/json",
-          },
-          referrerPolicy: "no-referrer", 
-          // body: JSON.stringify(generationOptions.value),
-        });
-
-        registrationData.value = JSON.stringify(await response.json(), null, 2)
-        // validating.value = true;
-      } catch(error) {
-        errMessage.value = "Error: " + error;
-        registrationData.value = ""; 
-      }
-       
-      generating.value = false;
-    }, { immediate: true }
-)
-
-const btn = ref(
-    'rounded-med bg-indigo-500 hover:bg-indigo-600 text-white p-2'
-)
 
 const highlighted = computed(() => {
   const hl = hljs.highlight(registrationData.value, { 
@@ -103,12 +99,6 @@ function update(e) {
   syncScroll(e)
 }
 
-const editArea = ref(null)
-const highlightArea = ref(null)
-const highlightHeight = ref(null)
-onMounted(() => {
-  highlightHeight.value = editArea.style?.height
-})
 
 function syncScroll(e) {
   if (!highlightArea.value) { return }
@@ -134,6 +124,7 @@ useResizeObserver(editArea, (entries) => {
            :value="registrationData"
            @input="update"
            @scroll.passive="syncScroll"
+           placeholder="Paste JSON registration entries here or click 'Generate' to generate some random data."
       ></textarea>
       
       <pre 
@@ -152,7 +143,7 @@ useResizeObserver(editArea, (entries) => {
       </div>
   </section>
 
-  <div v-if="errMessage">
+  <div v-if="errMessage !== null">
       {{errMessage}}
   </div>
 
@@ -185,7 +176,7 @@ button {
   margin: 10px;
   display: block;
   overflow-x: auto;
-  padding: 0.5em;
+  padding: 0;
 }
 
 #editArea, #highlightArea, #highlightArea * {
@@ -200,6 +191,7 @@ pre code.hljs {
 #editArea, #highlightArea {
   grid-column: 1;
   grid-row: 1;
+  background-color: #0d1117;
 }
 
 #editArea {

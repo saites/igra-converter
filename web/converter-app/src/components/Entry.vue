@@ -4,6 +4,7 @@ import {
 //   fullName, dbContestantCat 
 } from '@/utils.js'
 import { ref, computed } from 'vue'
+import EventsGrid from "./Events.vue"
 import EventRow from "./EventRow.vue"
 import DataCell from "./DataCell.vue"
 import AddressCell from "./AddressCell.vue"
@@ -89,6 +90,7 @@ const maybeMatches = computed(() => {
       .filter((record) => record !== undefined)
   )
 })
+
 </script>
 
 <template>
@@ -152,24 +154,12 @@ const maybeMatches = computed(() => {
 
     <section>
       <header class="text-lg">Registered Events</header>
-      <table class="table-auto">
-        <thead>
-          <tr>
-            <th>Event</th>
-            <th>Round</th>
-            <th>Partner 1</th>
-            <th>Partner 2</th>
-          </tr>
-        </thead>
-        <tbody>
-          <event-row v-for="event in events"
-            :event=event
-            :issues=issues
-            :relevant=relevant
-            :partners=partners
-          ></event-row>
-        </tbody>
-      </table>
+      <events-grid 
+        :events=events
+        :issues=issues
+        :relevant=relevant
+        :partners=partners
+      ></events-grid>
     </section>
 
     <section v-if="issues.length > 0">

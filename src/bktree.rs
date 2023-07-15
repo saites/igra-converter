@@ -96,15 +96,16 @@ impl<T, O> BKTree<T, O>
             F: Fn(&T) -> O
     {
         if let Some(r) = &self.root {
-            let (cnt, v) = r.find_closest(max_dist, dist);
-            if v.is_some() {
+            let (cnt, v) = r.find_by(max_dist, dist);
+            if !v.is_empty() {
                 log::debug!("Processed {cnt} of {total} nodes and found a target.",
                     total=self.size);
+                return Some(v[0]);
             } else {
                 log::debug!("Processed {cnt} of {total} nodes but did not find a target.",
                     total=self.size);
+                return None;
             }
-            return v;
         } else {
             return None;
         }
@@ -247,46 +248,5 @@ impl<T, O> BKTreeNode<T, O>
 
         r.sort_by(|(d0, _), (d1, _)| d0.cmp(d1));
         (cnt, r)
-    }
-
-    /// Find the single closest element no more than max_dist from the given item.
-    /// Returns (number of nodes processed, Option<(distance to &T, &T)>).
-    fn find_closest<F>(&self, max_dist: O, dist: F) -> (usize, Option<(O, &T)>)
-        where
-            F: Fn(&T) -> O
-    {
-        let mut s = BinaryHeap::new();
-
-        let mut best_d = max_dist;
-        let mut best_u = None;
-        let d_wu = dist(&self.value);
-        s.push(ProcNode { u: self, dist_wu: d_wu, id: 0 });
-
-        let mut cnt = 0;
-        while let Some(ProcNode { u, dist_wu, id: _ }) = s.pop() {
-            cnt += 1;
-
-            // Shrink our radius if we can.
-            if dist_wu < best_d {
-                best_d = dist_wu;
-                best_u = Some((best_d, &u.value));
-            }
-
-            // Add children that live on a hypersphere that intersects our tolerance.
-            if let Some(c) = &u.children {
-                for (dist_uv, v) in c {
-                    let diff = if dist_wu < *dist_uv {
-                        dist_uv.sub(dist_wu)
-                    } else {
-                        dist_wu.sub(*dist_uv)
-                    };
-                    if diff < best_d {
-                        s.push(ProcNode { u: v, dist_wu: dist(&v.value), id: cnt });
-                    }
-                }
-            }
-        }
-
-        (cnt, best_u)
     }
 }
