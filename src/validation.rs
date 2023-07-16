@@ -273,7 +273,7 @@ impl<'a> EntryValidator<'a> {
         // We can't mutate the results in the above code
         // because we need to borrow them again to find other records;
         // hence, we need another iteration to insert the found issues.
-        for (v, mi) in zip(&mut results, &mut more_issues) {
+        for (v, mi) in zip(&mut results.iter_mut().filter(|r| r.found.is_some()), &mut more_issues) {
             // If we're going to recommend adding/using non-registered people,
             // add their data to the relevance collection.
             for sugg in mi.iter() {
@@ -846,13 +846,16 @@ fn validate_cross_reg(
         let b_to_a = entry_b
             .map(|b| b.confirmed_partners.get(person_a))
             .flatten();
-        for (a_event, a_round, a_index) in a_events_with_b {
+        for (event_a, round_a, index_a) in a_events_with_b {
             if entry_b.is_none() {
+                log::debug!("{} says they're partnering with {}, but {} isn't registered",
+                    person_a, person_b, person_b
+                );
                 issues.push(Suggestion {
                     problem: Problem::UnregisteredPartner {
-                        event: *a_event,
-                        round: *a_round,
-                        index: *a_index,
+                        event: *event_a,
+                        round: *round_a,
+                        index: *index_a,
                     },
                     fix: Fix::AddRegistration(IGRANumber(person_b.igra_number.clone())),
                 });
@@ -862,16 +865,16 @@ fn validate_cross_reg(
             let b_listed_a = b_to_a.map_or(false, |listings| {
                 listings
                     .iter()
-                    .any(|(b_event, b_round, _)| b_event == a_event && b_round == a_round)
+                    .any(|(b_event, b_round, _)| b_event == event_a && b_round == round_a)
             });
 
             // A listed B, but B didn't list A.
             if !b_listed_a {
                 issues.push(Suggestion {
                     problem: Problem::MismatchedPartners {
-                        event: *a_event,
-                        round: *a_round,
-                        index: *a_index,
+                        event: *event_a,
+                        round: *round_a,
+                        index: *index_a,
                         partner: IGRANumber(person_b.igra_number.clone()),
                     },
                     fix: Fix::ContactRegistrant,
