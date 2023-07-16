@@ -27,6 +27,7 @@ use axum_extra::extract::WithRejection;
 
 use log;
 use rand::prelude::*;
+use serde::Deserialize;
 use tower_http::services::ServeDir;
 use serde_json::json;
 
@@ -35,7 +36,7 @@ use crate::robin::{
     Address, Association, Contestant, Date, EventID, Payment, Registration,
 };
 use crate::validation::{
-    EntryValidator, PersonRecord, Report, RodeoEvent, Suggestion,
+    EntryValidator, PersonRecord, Report, RodeoEvent,
 };
 use crate::xbase::{
     Header, TableReader,
@@ -64,6 +65,20 @@ async fn main() -> MyResult<()> {
             let report = do_validate(&people, &reg)?;
             let j = serde_json::to_string_pretty(&report)?;
             println!("{j}");
+        }
+        "search" => {
+            let person = args.next().ok_or("third arg should be a name")?;
+            let people = validation::read_personnel(dbt)?;
+            log::info!("Number of people in personnel database: {}", people.len());
+            let validator = EntryValidator::new(&people);
+
+            let (igra, name) = validation::split_partner(&person);
+            let (perfect, matches) = validator.find_person(igra, "", "", &name);
+
+            println!("IGRA #: {igra:?} | Name: {name} | Perfect Match: {perfect} | Num matches: {}", matches.len());
+            for p in matches {
+                println!("\t{p}")
+            }
         }
         "gen_db" => {
             let target_path = args.next().ok_or("third arg should be a path")?;
@@ -219,17 +234,29 @@ async fn handle_validate<'a>(
     )
 }
 
+fn default_num_people() -> u8 { 10 }
+
+#[derive(Copy, Clone, Debug, Deserialize)]
+struct GenerationOptions {
+    #[serde(default="default_num_people")]
+    num_people: u8,
+}
+
 /// Generates random registration data and returns the result as a JSON object.
 async fn handle_generate(
     State(state): State<AppState>,
-    // Json(payload): Json<GenerationOptions>,
-) -> Result<(StatusCode, Json<Vec<Registration>>), String>
+    Json(payload): Json<GenerationOptions>,
+) -> Result<(StatusCode, Json<Vec<Registration>>), ApiError>
 {
+    if !matches!(payload.num_people, 2..=100) {
+        return Err(ApiError::InvalidNumberOfPeople {amount: payload.num_people, min: 2, max: 100})
+    }
+
     generate_fake_reg(&state.people.clone(), 10)
         .map(|r| (StatusCode::OK, Json(r)))
         .map_err(|err| {
             log::error!("{:?}", err);
-            "An unexpected error occurred".to_string()
+            ApiError::Unexpected
         })
 }
 
@@ -256,6 +283,7 @@ fn do_db_gen<P, R>(dbt: TableReader<Header<R>>, target_path: P) -> MyResult<()>
 }
 
 /// Generates `n` random `Registration`s from the given collection of people.
+/// Barring bugs in the implementation, this returns a valid collection of registrations.
 fn generate_fake_reg(people: &Vec<PersonRecord>, n: usize) -> MyResult<Vec<Registration>> {
     let mut rng = thread_rng();
     let mut registrations = Vec::with_capacity(n);
@@ -279,106 +307,9 @@ fn generate_fake_reg(people: &Vec<PersonRecord>, n: usize) -> MyResult<Vec<Regis
     let participants: Vec<_> = people.choose_multiple(&mut rng, n).collect();
     let n = participants.len(); // in case n > people.len()
 
-    fn add_event(rng: &mut ThreadRng, events: &mut Vec<robin::Event>, rid: RodeoEvent, partners: Vec<String>) {
-        // With high probability, register for this event twice.
-        if rng.gen::<u8>() > 15 {
-            add_rounds(true, true, events, rid, partners);
-        } else {
-            // Otherwise randomly choose which round to register for.
-            if rng.gen() {
-                add_rounds(true, false, events, rid, partners);
-            } else {
-                add_rounds(false, true, events, rid, partners);
-            }
-        }
-    }
-
-    // This is separated from the above to make it easier to add events in a coordinated way.
-    fn add_rounds(round1: bool, round2:bool, events: &mut Vec<robin::Event>, rid: RodeoEvent, partners: Vec<String>) {
-        if round1 {
-            events.push(robin::Event {
-                id: EventID::Known(rid),
-                partners: partners.clone(),
-                round: 1,
-            });
-        }
-
-        if round2 {
-            events.push(robin::Event {
-                id: EventID::Known(rid),
-                partners,
-                round: 2,
-            });
-        }
-    }
-
-    // Start with single-person events and create registration entries.
-    for r in &participants {
-        // Start by deciding how many/which events this person will register for.
-        let n_events = rng.gen_range(0..=event_mod) + 2;
-        let mut events = Vec::<>::with_capacity(n_events);
-        let chosen_events = event_names.choose_multiple(&mut rng, n_events);
-
-        for eid in chosen_events {
-            add_event(&mut rng, &mut events, *eid, vec![]);
-        }
-
-        let payment = Payment { total: (events.len() * 30) as u64 };
-
-        let perf_name = format!("{} {}", r.first_name, r.last_name);
-
-        log::debug!("{:?}", r.birthdate);
-        let dob_y = r.birthdate[0..4].parse::<u16>().unwrap_or(1970);
-        let dob_m = r.birthdate[4..6].parse::<u8>().unwrap_or(1);
-        let dob_d = r.birthdate[6..8].parse::<u8>().unwrap_or(1);
-        let dob = Date { year: dob_y, month: dob_m, day: dob_d };
-
-        fn format_phone(phone_num: &str) -> String {
-            format!("{}{}{}", &phone_num[1..4], &phone_num[5..8], &phone_num[9..13])
-        }
-
-        let pr = Registration {
-            id: rng.gen(),
-            stalls: "".to_string(),
-            contestant: Contestant {
-                first_name: r.legal_first.clone(),
-                last_name: r.legal_last.clone(),
-                performance_name: perf_name,
-                age: dob.naive_date().and_then(|d| today.years_since(d)).unwrap_or(0) as u8,
-                dob,
-                gender: if r.sex == "M" { "Cowboys".to_string() } else { "Cowgirls".to_string() },
-                is_member: "yes".to_string(),
-                ssn: r.ssn[7..].to_string(),
-                note_to_director: "".to_string(),
-                address: Address {
-                    email: r.email.clone(),
-                    address_line_1: r.address.clone(),
-                    address_line_2: "".to_string(),
-                    city: r.city.clone(),
-                    region: r.region().map_or(
-                        r.state.clone(),
-                        |re| re.to_string()),
-                    country: "United States".to_string(),
-                    zip_code: r.zip.clone(),
-                    cell_phone_no: format_phone(&r.cell_phone),
-                    home_phone_no: format_phone(&r.home_phone),
-                },
-                association: Association {
-                    igra: r.igra_number.clone(),
-                    member_assn: r.association.clone(),
-                },
-            },
-            events,
-            payment,
-        };
-
-        registrations.push(pr);
-    }
-
-    // Now handle partner events.
+    // This decides randomly among possible ways of writing the partner's name.
+    // Each subsequent style is half as likely as the one before it.
     fn partner_name(rng: &mut ThreadRng, p: &PersonRecord) -> String {
-        // Decide randomly among possible ways of writing the partner's name.
-        // Each subsequent style is half as likely as the one before it.
         if rng.gen() {
             p.igra_number.clone()
         } else if rng.gen() {
@@ -394,34 +325,111 @@ fn generate_fake_reg(people: &Vec<PersonRecord>, n: usize) -> MyResult<Vec<Regis
         }
     }
 
-    // For most team events, we can pair up people randomly.
+    // This helper registers a (possible 1-person) team of people,
+    // either for a single go-round or for both go-rounds,
+    // ensuring that all teammates mutually register with one another.
+    fn register(rng: &mut ThreadRng, rid: RodeoEvent, who: &mut [(&PersonRecord, &mut Registration)]) {
+        // With high probability, register for this event twice.
+        // We'll also pick a round to register for if we decide to only register for one.
+        let twice = rng.gen::<u8>() > 15;
+        let round = rng.gen_range(1..=2);
+
+        // We need to generate the partner names before taking the mutable borrow on who.
+        let partner_names: Vec<_> = who.iter().map(|(p, _)| {
+                who.iter().filter_map(|(p2, _)| {
+                    if p == p2 { None } else { Some(partner_name(rng, p2)) }
+                }).collect::<Vec<_>>()
+            }).collect();
+
+        let id = EventID::Known(rid);
+
+        // Register each person with their partners.
+        for ((_, ref mut r), partners) in who.into_iter().zip(partner_names) {
+            if twice {
+                r.events.push(robin::Event { id, partners: partners.clone(), round: 1 });
+                r.events.push(robin::Event { id, partners, round: 2 });
+                r.payment.total += 60;
+            } else {
+                r.events.push(robin::Event { id, partners, round });
+                r.payment.total += 30;
+            }
+        }
+    }
+
+    fn format_phone(phone_num: &str) -> String {
+        format!("{}{}{}", &phone_num[1..4], &phone_num[5..8], &phone_num[9..13])
+    }
+
+    // Start with single-person events and create registration entries.
+    for p in &participants {
+        let perf_name = format!("{} {}", p.first_name, p.last_name);
+        let dob_y = p.birthdate[0..4].parse::<u16>().unwrap_or(1970);
+        let dob_m = p.birthdate[4..6].parse::<u8>().unwrap_or(1);
+        let dob_d = p.birthdate[6..8].parse::<u8>().unwrap_or(1);
+        let dob = Date { year: dob_y, month: dob_m, day: dob_d };
+
+        let n_events = rng.gen_range(0..=event_mod) + 2;
+        let events = Vec::<>::with_capacity(n_events);
+
+        let mut r = Registration {
+            id: rng.gen(),
+            stalls: "".to_string(),
+            contestant: Contestant {
+                first_name: p.legal_first.clone(),
+                last_name: p.legal_last.clone(),
+                performance_name: perf_name,
+                age: dob.naive_date().and_then(|d| today.years_since(d)).unwrap_or(0) as u8,
+                dob,
+                gender: if p.sex == "M" { "Cowboys".to_string() } else { "Cowgirls".to_string() },
+                is_member: "yes".to_string(),
+                ssn: p.ssn[7..].to_string(),
+                note_to_director: "".to_string(),
+                address: Address {
+                    email: p.email.clone(),
+                    address_line_1: p.address.clone(),
+                    address_line_2: "".to_string(),
+                    city: p.city.clone(),
+                    region: p.region().map_or(
+                        p.state.clone(),
+                        |re| re.to_string()),
+                    country: "United States".to_string(),
+                    zip_code: p.zip.clone(),
+                    cell_phone_no: format_phone(&p.cell_phone),
+                    home_phone_no: format_phone(&p.home_phone),
+                },
+                association: Association {
+                    igra: p.igra_number.clone(),
+                    member_assn: p.association.clone(),
+                },
+            },
+            events,
+            payment: Payment { total: 0 },
+        };
+
+        for eid in event_names.choose_multiple(&mut rng, n_events) {
+            register(&mut rng, *eid, &mut [(p, &mut r)]);
+        }
+
+        registrations.push(r);
+    }
+
+    // Now handle partner events. For most team events, we can pair up people randomly.
     [
         RodeoEvent::TeamRopingHeader,
         RodeoEvent::TeamRopingHeeler,
         RodeoEvent::GoatDressing,
         RodeoEvent::SteerDecorating,
     ].iter().for_each(|eid| {
+        // First choose how many/which people will participate.
         let n_event = 2 * rng.gen_range(0..=n / 2);
         let mut in_event = participants.iter().zip(registrations.iter_mut())
             .choose_multiple(&mut rng, n_event);
         let mut in_event = in_event.iter_mut();
 
+        // While we can grab a pair of participants, pair them up in the event.
         while let Some((p1, ref mut r1)) = in_event.next() {
-            let (p2, ref mut r2) = in_event.next().unwrap();
-            let p1_partners = vec![partner_name(&mut rng, p2)];
-            let p2_partners = vec![partner_name(&mut rng, p1)];
-            if rng.gen::<u8>() > 15 {
-                add_rounds(true, true, &mut r1.events, *eid, p1_partners);
-                add_rounds(true, true, &mut r2.events, *eid, p2_partners);
-            } else {
-                if rng.gen() {
-                    add_rounds(false, true, &mut r1.events, *eid, p1_partners);
-                    add_rounds(false, true, &mut r2.events, *eid, p2_partners);
-                } else {
-                    add_rounds(true, false, &mut r1.events, *eid, p1_partners);
-                    add_rounds(true, false, &mut r2.events, *eid, p2_partners);
-                }
-            }
+            let (p2, ref mut r2) = in_event.next().expect("n_events is even, so we should have pairs");
+            register(&mut rng, *eid, &mut [(p1, r1), (p2, r2)]);
         }
     });
 
@@ -433,28 +441,14 @@ fn generate_fake_reg(people: &Vec<PersonRecord>, n: usize) -> MyResult<Vec<Regis
     let mut cowboys = cowboys.iter_mut();
     let mut cowgirls = cowgirls.iter_mut();
 
+    // Build up to n/3 drag teams by randomly choosing a cowboy, cowgirl, and drag.
+    // Note that we can end up with fewer teams then chosen by the RNG,
+    // if we happen to have a high imbalance of cowboys:cowgirls.
     for _ in 0..rng.gen_range(0..=(n / 3)) {
         let drag = if rng.gen() { cowboys.next() } else { cowgirls.next() };
         match (cowboys.next(), cowgirls.next(), drag) {
             (Some(cb), Some(cg), Some(d)) => {
-                let cbp = vec![partner_name(&mut rng, cg.0), partner_name(&mut rng, d.0)];
-                let cgp = vec![partner_name(&mut rng, cb.0), partner_name(&mut rng, d.0)];
-                let dp = vec![partner_name(&mut rng, cb.0), partner_name(&mut rng, cg.0)];
-                if rng.gen::<u8>() > 15 {
-                    add_rounds(true, true, &mut cb.1.events, RodeoEvent::WildDragRace, cbp);
-                    add_rounds(true, true, &mut cg.1.events, RodeoEvent::WildDragRace, cgp);
-                    add_rounds(true, true, &mut d.1.events, RodeoEvent::WildDragRace, dp);
-                } else {
-                    if rng.gen() {
-                        add_rounds(false, true, &mut cb.1.events, RodeoEvent::WildDragRace, cbp);
-                        add_rounds(false, true, &mut cg.1.events, RodeoEvent::WildDragRace, cgp);
-                        add_rounds(false, true, &mut d.1.events, RodeoEvent::WildDragRace, dp);
-                    } else {
-                        add_rounds(true, false, &mut cb.1.events, RodeoEvent::WildDragRace, cbp);
-                        add_rounds(true, false, &mut cg.1.events, RodeoEvent::WildDragRace, cgp);
-                        add_rounds(true, false, &mut d.1.events, RodeoEvent::WildDragRace, dp);
-                    }
-                }
+                register(&mut rng, RodeoEvent::WildDragRace, &mut [(cb.0, cb.1), (cg.0, cg.1), (d.0, d.1)]);
             }
             _ => break,
         }
@@ -571,45 +565,3 @@ fn generate_fake_db() -> Result<Vec<PersonRecord>, Box<dyn Error>> {
 
     Ok(res)
 }
-
-fn write_output(mut w: impl io::Write, report: &Report, people: &Vec<PersonRecord>)
-                -> Result<(), Box<dyn Error>>
-{
-    for v in &report.results {
-        let c = &v.registration.contestant;
-
-        println!("{} {}", c.first_name, c.last_name);
-        if let Some(pr) = v.found {
-            println!("\tFound: {:#?}", pr);
-        } else {
-            println!("\tMissing");
-        }
-
-        if c.note_to_director != "" {
-            println!("\tNote to Director: {}", c.note_to_director);
-        }
-
-        if !v.partners.is_empty() {
-            for (person_rec, partner_details) in v.partners.iter()
-                .filter_map(|p| report.relevant.get(p.igra_number).zip(Some(p))) {
-                println!("\t\t{e:20} round {r} - {p}",
-                         e = format!("{:?}", &partner_details.event),
-                         r = &partner_details.round,
-                         p = person_rec,
-                );
-            }
-        }
-
-        if v.issues.is_empty() {
-            println!("\tNo issues!");
-        } else {
-            for Suggestion { problem: p, fix: f } in &v.issues {
-                println!("\tProblem: {p:?} | Suggestion: {f:?}");
-            }
-        }
-    }
-
-    Ok(())
-}
-
-

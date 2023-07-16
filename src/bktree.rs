@@ -1,5 +1,4 @@
 use std::cmp::Ordering;
-use std::collections::BinaryHeap;
 use std::fmt;
 use std::ops::Sub;
 
@@ -95,19 +94,10 @@ impl<T, O> BKTree<T, O>
         where
             F: Fn(&T) -> O
     {
-        if let Some(r) = &self.root {
-            let (cnt, v) = r.find_by(max_dist, dist);
-            if !v.is_empty() {
-                log::debug!("Processed {cnt} of {total} nodes and found a target.",
-                    total=self.size);
-                return Some(v[0]);
-            } else {
-                log::debug!("Processed {cnt} of {total} nodes but did not find a target.",
-                    total=self.size);
-                return None;
-            }
+        if let [first, ..] = self.find_by(max_dist, dist)[..] {
+            Some(first)
         } else {
-            return None;
+            None
         }
     }
 }

@@ -107,12 +107,15 @@ pub struct Decimal {
     exponent: u32,
 }
 
-#[allow(unused)]
 impl Decimal {
+    /// Return the integral portion of the value
+    /// (i.e., the portion before the decimal point).
     fn integral(&self) -> i64 {
         self.mantissa / (10_i64.pow(self.exponent))
     }
 
+    /// Return the fractional portion of the value
+    /// (i.e., the portion after the decimal point).
     fn fractional(&self) -> u64 {
         if self.mantissa > 0 {
             (self.mantissa % (10_i64.pow(self.exponent))) as u64
@@ -121,7 +124,8 @@ impl Decimal {
         }
     }
 
-    fn to_f64_lossy(&self) -> f64 {
+    /// Return the value as an float, possibly loosing precision.
+    pub fn to_f64_lossy(&self) -> f64 {
         return self.integral() as f64 + self.fractional() as f64;
     }
 }
@@ -137,7 +141,7 @@ impl Display for Decimal {
     }
 }
 
-#[allow(dead_code)]
+#[allow(unused)]
 #[derive(Debug)]
 pub enum Field {
     Character(String),
@@ -146,11 +150,8 @@ pub enum Field {
     Boolean(Option<bool>),
     Memo(Option<u64>),
     Numeric(Option<Decimal>),
-
-    NotImplemented,
 }
 
-#[allow(unused)]
 #[derive(Debug, Clone)]
 pub struct FieldDescriptor {
     name: String,
@@ -161,11 +162,12 @@ pub struct FieldDescriptor {
     example: u8,
 }
 
-#[allow(unused)]
 #[derive(Error, Debug)]
 pub enum DBaseErrorKind {
-    #[error("non-utf8 text data")]
-    InvalidUTF8,
+    #[error("expected magic byte 0x0d to terminate header, but found {found}")]
+    InvalidHeaderTerminator { found: u8 },
+    #[error("unable to parse date as YYYYMMDD: {}", .0)]
+    InvalidDate(String),
     #[error("unknown logical value: {}", .0)]
     UnknownLogicalValue(String),
     #[error("unknown field type: {:x}", .0)]
@@ -178,7 +180,7 @@ pub enum DBaseErrorKind {
     #[error(transparent)]
     NumericConversionError(#[from] ParseIntError),
     #[error(transparent)]
-    IOError(#[from] std::io::Error),
+    IOError(#[from] io::Error),
 }
 
 pub type DBaseResult<T> = Result<T, DBaseErrorKind>;
@@ -240,15 +242,13 @@ impl FieldDescriptor {
         match field {
             Field::Character(s) => { write!(w, "{s:<0$.0$}", self.length)?; }
             Field::Float(f) => { write!(w, "{f:>0$}", self.length)?; }
-            Field::Boolean(Some(b)) => { w.write(if *b {&[b'T']} else {&[b'F']})?; }
+            Field::Boolean(Some(b)) => { w.write(if *b { &[b'T'] } else { &[b'F'] })?; }
+            Field::Boolean(None) => { w.write(&[b'?'])?; }
             Field::Numeric(Some(n)) => { write!(w, "{n:>0$}", self.length)?; }
-            Field::Memo(Some(id)) => { write!(w, "{id:>10}")?; }
-
-            Field::Boolean(None) => {}
             Field::Numeric(None) => {}
+            Field::Memo(Some(id)) => { write!(w, "{id:>10}")?; }
             Field::Memo(None) => {}
-            Field::Date(_) => {}
-            Field::NotImplemented => {}
+            Field::Date(d) => { write!(w, "{y:04}{m:02}{d:02}", y = d.year(), m = d.month(), d = d.day())?; }
         };
 
         Ok(())
@@ -261,7 +261,8 @@ impl FieldDescriptor {
                 Ok(Field::Character(val))
             }
             FieldType::Date => {
-                Ok(Field::NotImplemented)
+                Ok(Field::Date(NaiveDate::parse_from_str(&val, "%Y%m%d")
+                    .map_err(|_| DBaseErrorKind::InvalidDate(val))?))
             }
             FieldType::Float => {
                 Ok(Field::Float(f64::from_str(&val)?))
@@ -316,7 +317,6 @@ impl FieldDescriptor {
 }
 
 /// Holds information read from a DBase table header or needed to write one.
-#[allow(unused)]
 #[derive(Debug)]
 struct DBaseTable {
     last_updated: NaiveDate,
@@ -330,10 +330,11 @@ pub struct TableWriter<S: TableWriterState> {
     state: S,
 }
 
+// TODO: clean this up to enforce state changes.
 impl<W> TableWriter<Header<W>>
     where W: io::Write
 {
-    pub fn new(mut writer: W) -> DBaseResult<Self> {
+    pub fn new(writer: W) -> DBaseResult<Self> {
         let table = DBaseTable {
             last_updated: chrono::Utc::now().naive_utc().date(),
             flags: 0b0000_0011, // magic found in my tables
@@ -349,10 +350,9 @@ impl<W> TableWriter<Header<W>>
         })
     }
 
-    pub fn add_field(&mut self, field: FieldDescriptor) {
-        self.table.fields.push(field);
-    }
-
+    // TODO: change this to either have types self-describe,
+    //   or just use the first record to determine the Fields.
+    /// Add the collection of fields this table will write.
     pub fn add_fields<R>(&mut self, tr: &TableReader<Header<R>>) {
         for f in &tr.table.fields {
             self.table.fields.push(f.clone());
@@ -363,8 +363,8 @@ impl<W> TableWriter<Header<W>>
     ///
     /// Each record must have the same number of fields,
     /// and must match the order and type of the table's field descriptors.
-    pub fn write_records<I>(mut self, records: &[I]) -> DBaseResult<()>
-      where I: DBaseRecord
+    pub fn write_records<I>(self, records: &[I]) -> DBaseResult<()>
+        where I: DBaseRecord
     {
         let mut data: [u8; 32] = [0; 32];
         let mut view = dbase_header::View::new(&mut data);
@@ -417,7 +417,6 @@ impl<W> TableWriter<Header<W>>
 
         Ok(())
     }
-
 }
 
 pub trait DBaseRecord {
@@ -458,6 +457,7 @@ impl<W: io::Write + io::Seek> TableWriterState for Writing<W> {}
 /// There are no extra methods while in the Records state.
 impl<R: io::Read> TableReaderState for Records<R> {}
 
+/// Read a DBF table from the given path.
 pub fn try_from_path<P: AsRef<Path>>(path: P) -> DBaseResult<TableReader<Header<impl io::Read>>> {
     let file = File::open(path)?;
     let reader = BufReader::new(file);
@@ -465,12 +465,9 @@ pub fn try_from_path<P: AsRef<Path>>(path: P) -> DBaseResult<TableReader<Header<
 }
 
 impl<S: TableReaderState> TableReader<S> {
+    /// Get the number of records the DBF table holds.
     pub fn n_records(&self) -> usize {
         self.table.n_records
-    }
-
-    pub fn n_header_bytes(&self) -> usize {
-        self.table.fields.len() * 32 + 33
     }
 }
 
@@ -513,8 +510,9 @@ impl<R> TableReader<Header<R>>
 
         let mut terminator: [u8; 1] = [0];
         reader.read_exact(&mut terminator)?;
-        assert_eq!(terminator[0], 0x0d);
-        // assert_eq!(table.n_header_bytes(), n_header_bytes);
+        if terminator[0] != 0x0d {
+            return Err(DBaseErrorKind::InvalidHeaderTerminator { found: terminator[0] });
+        }
 
         Ok(TableReader {
             table: Box::new(table),
