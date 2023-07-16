@@ -1,5 +1,4 @@
 <script setup lang="ts">
-// import { fullName, dbContestantCat } from '@/utils.js'
 import DataCell from './DataCell.vue';
 import AddressCell from './AddressCell.vue';
 
@@ -22,7 +21,7 @@ function dbContestantCat(value) {
 </script>
 
 <template>
-    <tr>
+  <tr>
       <th>{{header}}</th>
       <data-cell :value=record?.igra_number></data-cell>
       <data-cell :value=record?.association></data-cell>
@@ -43,6 +42,6 @@ function dbContestantCat(value) {
       <data-cell :value=record?.cell_phone></data-cell>
       <data-cell :value=record?.home_phone></data-cell>
       <data-cell></data-cell>
-    </tr>
+  </tr>
 </template>
 

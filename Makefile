@@ -13,10 +13,11 @@ BUILD_DIRS = dtarget/debug dtarget/release
 
 CARGO_RUN_ARGS ?= --release
 
-data/random-data.dbf:
-	cargo run $(CARGO_RUN_ARGS) gen_db ./new-random.dbf $@
-serve-local: data/random-data.dbf
-	cargo run $(CARGO_RUN_ARGS) serve ./data/random-data.dbf 8080
+RANDOM_DBF ?= ./data/RANDOM.DBF
+$(RANDOM_DBF):
+	cargo run $(CARGO_RUN_ARGS) gen_db ../shared/PERSONEL.DBF $@
+serve-local: $(RANDOM_DBF) 
+	cargo run $(CARGO_RUN_ARGS) serve $(RANDOM_DBF) 8080
 
 
 up: $(BUILD_DIRS)

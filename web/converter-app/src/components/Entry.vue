@@ -1,9 +1,7 @@
 <script setup lang="ts">
-import { 
-  friendlyProblem, friendlyFix, 
-//   fullName, dbContestantCat 
-} from '@/utils.js'
+import { friendlyProblem, friendlyFix } from '@/utils.js'
 import { ref, computed } from 'vue'
+import Accordion from "./Accordion.vue"
 import EventsGrid from "./Events.vue"
 import EventRow from "./EventRow.vue"
 import DataCell from "./DataCell.vue"
@@ -52,18 +50,19 @@ const unfilledFields = computed(() => {
 })
 
 // Do we have a database value, but different from this one?
-const isDbMismatch = computed(() => {
-  let { issues, field, fields } = props;
+function isDbMismatch(fields) {
+  let { issues } = props;
   if (!issues) { return false; }
-  let compareTo = field ? [field] : (fields ?? []);
+
+  return false
 
   return issues.some((issue) => {
       return (
         issue.problem.name === "DbMismatch"
-        && compareTo.some((f) => issue.problem.data.field === f)
+        && fields.some((f) => issue.problem.data.field === f)
       )
   })
-})
+}
 
 // Should we expect _any_ DB data?
 const missingDbValue = computed(() => {
@@ -91,55 +90,82 @@ const maybeMatches = computed(() => {
   )
 })
 
+const contestantRegion = computed(() => {
+  // The region in the registration form is a full state name,
+  // which looks pretty awkward.
+  // So, if we have a matching DB value, use that instead,
+  // since those are just two letter abbreviations.
+  let { issues, contestant, relevant, found } = props
+  if (!issues || !contestant || !relevant) { return }
+  
+  // Make sure we have a DB value to use.
+  if (isDbMismatch(["Region"])) { 
+    return contestant.address.region
+  }
+
+  return found?.state ?? contestant.address.region
+})
+
 </script>
 
 <template>
-  <article>
-    <section>
-      <header class="text-lg">Registration Data</header>
+  <article class="grid grid-cols-1 justify-items-center gap-y-2">
+    <accordion class="grid grid-cols-12 w-[800px] min-w-full max-w-screen-xlg">
+      <template #summary>
+        <div :class="{'bg-gray-200': issues.length === 0, 'bg-red-200': issues.length > 0}">
+        <header class="text-lg">
+          <span>{{fullName(contestant.firstName, contestant.lastName)}}</span>
+          <span class="mx-8">{{events.length}} Go-Rounds</span>
+          <span>({{issues.length}} 
+            issue{{issues.length !== 1 ? 's' : ''}}
+            with this registration)</span>
+        </header>
+        </div>
+      </template>
 
-      <table class="table-auto">
-        <thead>
-          <tr>
-            <th></th>
-            <th>IGRA Number</th>
-            <th>Association</th>
-            <th>Legal Name</th>
-            <th>Performance Name</th>
-            <th>Date of Birth</th>
-            <th>Competes With</th>
-            <th>Address</th>
-            <th>Email</th>
-            <th>Cell Phone</th>
-            <th>Home Phone</th>
-            <th>Note to Director</th>
-          </tr>
-        </thead>
-        <tbody>
-
-          <tr>
-            <th>Registration Data</th>
+      <template #content>
+        <section>
+          <header class="text-md">Registration Info</header>
+          <div class="grid grid-cols-2">
+            <span><em>IGRA Number</em></span>
             <data-cell :value=contestant.association?.igra></data-cell>
+
+            <span><em>Association</em></span>
             <data-cell :value=contestant.association?.memberAssn></data-cell>
+
+            <span><em>Legal Name</em></span>
             <data-cell :value="fullName(contestant.firstName, contestant.lastName)"></data-cell>
+            <span><em>Performance Name</em></span>
             <data-cell :value=contestant.performanceName></data-cell>
+
+            <span><em>Date of Birth</em></span>
             <data-cell :value=contestantBday></data-cell>
+
+            <span><em>Competes With</em></span>
             <data-cell :value=contestant.gender></data-cell>
 
+            <span><em>Address</em></span>
             <address-cell
               :line1=contestant.address.addressLine1
               :line2=contestant.address.addressLine2
               :city=contestant.address.city
-              :region=contestant.address.region
+              :region="contestantRegion"
               :country=contestant.address.country
               :postalCode=contestant.address.zipCode
             ></address-cell>
 
+            <span><em>Email</em></span>
             <data-cell :value=contestant.address.email></data-cell>
+
+            <span><em>Cell Phone</em></span>
             <data-cell :value=contestant.address.cellPhoneNo></data-cell>
+
+            <span><em>Home Phone</em></span>
             <data-cell :value=contestant.address.homePhoneNo></data-cell>
+
+            <span><em>Note to Director</em></span>
             <data-cell :value=contestant.noteToDirector></data-cell>
-          </tr>
+          </div>
 
           <db-record-row header="Database Record"
             :class="{ 'bg-yellow-200': !found }"
@@ -147,62 +173,46 @@ const maybeMatches = computed(() => {
           <db-record-row v-for="match in maybeMatches" header="Possible Match"
             class="bg-blue-200"
             :record=match></db-record-row>
+        </section>
+    
+        <section>
+          <events-grid 
+            :events=events
+            :issues=issues
+            :relevant=relevant
+            :partners=partners
+          ></events-grid>
+        </section>
 
-        </tbody>
-      </table>
-    </section>
-
-    <section>
-      <events-grid 
-        :events=events
-        :issues=issues
-        :relevant=relevant
-        :partners=partners
-      ></events-grid>
-    </section>
-
-    <section v-if="issues.length > 0">
-      <header class="text-lg">Problems</header>
-      <table class="table-auto">
-        <thead>
-          <tr>
-            <th>Problem</th>
-            <th></th>
-            <th>Suggestion</th>
-            <th></th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="issue in issues">
-            <td>{{issue.problem.name}}</td>
-            <td><template v-if="issue.problem.data">{{issue.problem.data}}</template></td>
-            <td>{{issue.fix.name}}</td>
-            <td><template v-if="issue.fix.data">{{issue.fix.data}}</template></td>
-          </tr>
-        </tbody>
-      </table>
-    </section>
+          <section v-if="issues.length > 0">
+            <header class="text-lg">Problems</header>
+            <table class="table-auto">
+              <thead>
+                <tr>
+                  <th>Problem</th>
+                  <th></th>
+                  <th>Suggestion</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="issue in issues">
+                  <td>{{issue.problem.name}}</td>
+                  <td><template v-if="issue.problem.data">{{issue.problem.data}}</template></td>
+                  <td>{{issue.fix.name}}</td>
+                  <td><template v-if="issue.fix.data">{{issue.fix.data}}</template></td>
+                </tr>
+              </tbody>
+            </table>
+          </section>
+      </template>
+    </accordion>
   </article>
 </template>
 
-<style scoped>
-table {
-  border: 2px solid #42b983;
-  border-radius: 3px;
-  background-color: #fff;
-}
-
-th {
-  background-color: #42b983;
-  color: rgba(255, 255, 255, 0.66);
-}
-
-tr {
-  background-color: #f9f9f9;
-}
-
-article {
-  @apply grid grid-cols-1 justify-items-center ;
+<style>
+span:nth-child(odd) {
+  @apply text-end pe-4;
 }
 </style>
 

@@ -24,6 +24,7 @@ const generating = ref(false)
 const editArea = ref(null)
 const highlightArea = ref(null)
 const highlightHeight = ref(null)
+const generationOptions = ref({ "num_people": 10, })
 
 onMounted(() => {
   highlightHeight.value = editArea.style?.height
@@ -68,7 +69,7 @@ async function generate() {
         "Content-Type": "application/json",
       },
       referrerPolicy: "no-referrer", 
-      // body: JSON.stringify(generationOptions.value),
+      body: JSON.stringify(generationOptions.value),
     });
 
     if (!response.ok) {
@@ -181,8 +182,9 @@ useResizeObserver(editArea, (entries) => {
 }
 
 button {
-    @apply rounded bg-indigo-500 hover:bg-indigo-600 text-white p-2 w-24 h-16;
-    @apply disabled:bg-gray-500;
+  @apply rounded bg-indigo-500 hover:bg-indigo-600 text-white p-2 w-24 h-16;
+  @apply disabled:bg-gray-500;
+  @apply disabled:cursor-progress;
 }
 
 #editArea, #highlightArea {

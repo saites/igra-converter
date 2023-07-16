@@ -10,11 +10,11 @@ defineProps<{
 </script>
 
 <template>
-  <td class="text-center oldstyle-nums">
-      {{line1}}
+  <div class="oldstyle-nums">
+    <span>{{line1}}</span>
       <template v-if="line2"><br>{{line2}}</template>
       <br>{{city}}, {{region}} {{postalCode}}
       <template v-if='country && country !== "United States"'><br>{{country}}</template>
-  </td>
+  </div>
 </template>
 
