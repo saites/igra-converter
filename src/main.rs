@@ -68,14 +68,25 @@ async fn main() -> MyResult<()> {
         }
         "search" => {
             let person = args.next().ok_or("third arg should be a name")?;
+            let legal_first = args.next().unwrap_or("".to_string());
+            let legal_last = args.next().unwrap_or("".to_string());
+
             let people = validation::read_personnel(dbt)?;
             log::info!("Number of people in personnel database: {}", people.len());
             let validator = EntryValidator::new(&people);
 
             let (igra, name) = validation::split_partner(&person);
-            let (perfect, matches) = validator.find_person(igra, "", "", &name);
+            let (perfect, matches) = validator.find_person(
+                igra, &legal_first, &legal_last, &name);
 
-            println!("IGRA #: {igra:?} | Name: {name} | Perfect Match: {perfect} | Num matches: {}", matches.len());
+            println!("IGRA #: {igra:?} | Name: {name} | Perfect Match: {perfect} | Num matches: {count}",
+                     count = matches.len(),
+                     name = if legal_first.is_empty() && legal_last.is_empty() {
+                         name.into()
+                     } else {
+                         format!("'{legal_first} {legal_last}' aka {name}")
+                     }
+            );
             for p in matches {
                 println!("\t{p}")
             }
@@ -238,7 +249,7 @@ fn default_num_people() -> u8 { 10 }
 
 #[derive(Copy, Clone, Debug, Deserialize)]
 struct GenerationOptions {
-    #[serde(default="default_num_people")]
+    #[serde(default = "default_num_people")]
     num_people: u8,
 }
 
@@ -249,7 +260,7 @@ async fn handle_generate(
 ) -> Result<(StatusCode, Json<Vec<Registration>>), ApiError>
 {
     if !matches!(payload.num_people, 2..=100) {
-        return Err(ApiError::InvalidNumberOfPeople {amount: payload.num_people, min: 2, max: 100})
+        return Err(ApiError::InvalidNumberOfPeople { amount: payload.num_people, min: 2, max: 100 });
     }
 
     generate_fake_reg(&state.people.clone(), 10)
@@ -336,10 +347,10 @@ fn generate_fake_reg(people: &Vec<PersonRecord>, n: usize) -> MyResult<Vec<Regis
 
         // We need to generate the partner names before taking the mutable borrow on who.
         let partner_names: Vec<_> = who.iter().map(|(p, _)| {
-                who.iter().filter_map(|(p2, _)| {
-                    if p == p2 { None } else { Some(partner_name(rng, p2)) }
-                }).collect::<Vec<_>>()
-            }).collect();
+            who.iter().filter_map(|(p2, _)| {
+                if p == p2 { None } else { Some(partner_name(rng, p2)) }
+            }).collect::<Vec<_>>()
+        }).collect();
 
         let id = EventID::Known(rid);
 

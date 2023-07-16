@@ -436,7 +436,6 @@ impl<'a> EntryValidator<'a> {
             self.by_perf_last
                 .find_by(search_dist, |x| self.damlev.distance(&p_last, &x.0.last_name))
                 .into_iter().for_each(|(d, r)| p_finder.insert(d, r.0));
-            exp_hits += 2;
 
             if first.is_empty() && last.is_empty() {
                 self.by_first_name
@@ -445,6 +444,7 @@ impl<'a> EntryValidator<'a> {
                 self.by_last_name
                     .find_by(search_dist, |x| self.damlev.distance(&p_last, &x.0.legal_last))
                     .into_iter().for_each(|(d, r)| p_finder.insert(d, r.0));
+                exp_hits += 2;
             }
         }
 
@@ -577,6 +577,12 @@ impl<'a> EntryValidator<'a> {
         let (_, mut candidates) = self.find_person(
             if igra_num.is_empty() { None } else { Some(igra_num) },
             &who.first_name, &who.last_name, &who.performance_name,
+        );
+
+        log::debug!("Found {} candidates for '{} {}' aka '{}' with num '{:?}'",
+            candidates.len(),
+            who.first_name, who.last_name, who.performance_name,
+            igra_num,
         );
 
         // Now that we've got a (possibly empty) list of potential matches,
@@ -886,6 +892,7 @@ fn validate_cross_reg(
     issues
 }
 
+/// Registration fields.
 #[allow(unused)]
 #[derive(Eq, Hash, PartialEq, Debug, Copy, Clone, Serialize, Deserialize)]
 pub enum RegF {
