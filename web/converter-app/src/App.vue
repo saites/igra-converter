@@ -1,18 +1,6 @@
 <script setup lang="ts">
 import MyGrid from './components/Grid.vue'
-import { 
-  createApp,
-  ref, computed,
-  onMounted,
-  watchEffect, watch 
-} from 'vue'
-import { useResizeObserver } from '@vueuse/core'
-
-import hljs from 'highlight.js'
-import json from 'highlight.js/lib/languages/json';
-hljs.registerLanguage('json', json);
-import 'highlight.js/styles/github-dark.css'
-
+import { createApp, ref, computed } from 'vue'
 
 const BASE_URL = "."
 
@@ -21,14 +9,7 @@ const validationResult = ref(null)
 const errMessage = ref(null)
 const validating = ref(false)
 const generating = ref(false)
-const editArea = ref(null)
-const highlightArea = ref(null)
-const highlightHeight = ref(null)
 const nEntries = ref(20)
-
-onMounted(() => {
-  highlightHeight.value = editArea.style?.height
-})
 
 async function validate() {
   errMessage.value = null; 
@@ -87,32 +68,6 @@ async function generate() {
   generating.value = false;
 }
 
-const highlighted = computed(() => {
-  const hl = hljs.highlight(registrationData.value, { 
-    language: "json",
-    // ignoreIllegals: true 
-  })
-  return hl.value
-})
-
-function update(e) {
-  registrationData.value = e.target.value
-  syncScroll(e)
-}
-
-
-function syncScroll(e) {
-  if (!highlightArea.value) { return }
-  highlightArea.value.scrollTop = e.target.scrollTop
-  highlightArea.value.scrollLeft = e.target.scrollLeft
-}
-
-useResizeObserver(editArea, (entries) => {
-  const entry = entries[0]
-  const { width, height } = entry.contentRect
-  highlightHeight.value = height 
-})
-
 </script>
 
 <template>
@@ -123,19 +78,10 @@ useResizeObserver(editArea, (entries) => {
            :disabled="generating || validating"
            spellcheck="false"
            :value="registrationData"
-           @input="update"
-           @scroll.passive="syncScroll"
            placeholder="Paste JSON registration entries here or click 'Generate' to generate some random data."
       ></textarea>
       
-      <pre 
-           id="highlightArea" 
-           ref="highlightArea"
-           :style="highlightHeight ? {'height': highlightHeight + 'px'} : {'height': 'h-96'}"
-           aria-hidden="true"
-       ><code class="hljs json" language="json" v-html="highlighted"></code></pre>
     </div>
-
       <div class="flex justify-evenly">
         <label for="nEntries"># Entries: {{nEntries}}</label>
         <input id="nEntries" type="range" v-model.number="nEntries" min="2" max="200">
@@ -181,40 +127,10 @@ button {
   @apply disabled:cursor-progress;
 }
 
-#editArea, #highlightArea {
-  @apply h-96 overflow-y-scroll;
-  border: 0;
-  margin: 10px;
-  display: block;
-  overflow-x: auto;
-  padding: 0!important;
-}
-
-#editArea, #highlightArea, #highlightArea * {
-  @apply text-base leading-6;
-  font-family: monospace;
-}
-
-pre code.hljs {
-  padding: 0!important;
-}
-
-#editArea, #highlightArea {
-  grid-column: 1;
-  grid-row: 1;
+#editArea {
+  @apply block h-96 overflow-y-scroll overflow-x-auto resize-y;
+  @apply p-2 m-1 rounded-md border-solid border-2 border-sky-500;
+  @apply font-mono text-sky-400 caret-red-400 text-base leading-6;
   background-color: #0d1117;
 }
-
-#editArea {
-  @apply resize-y;
-  z-index: 1;
-  color: transparent;
-  background: transparent;
-  @apply caret-red-400;
-}
-
-#highlightArea {
-  z-index: 0;
-}
-
 </style>

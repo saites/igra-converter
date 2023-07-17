@@ -76,7 +76,7 @@ function onAnimationFinish(open) {
 
 <template>
   <details ref="details">
-    <summary ref="summary" class="inline"
+    <summary ref="summary" class="inline cursor-pointer"
       @click.prevent="click"><slot name="summary"></slot></summary>
     <div ref="content"><slot name="content"></slot></div>
   </details>
