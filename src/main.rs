@@ -259,11 +259,11 @@ async fn handle_generate(
     Json(payload): Json<GenerationOptions>,
 ) -> Result<(StatusCode, Json<Vec<Registration>>), ApiError>
 {
-    if !matches!(payload.num_people, 2..=100) {
+    if !matches!(payload.num_people, 2..=200) {
         return Err(ApiError::InvalidNumberOfPeople { amount: payload.num_people, min: 2, max: 100 });
     }
 
-    generate_fake_reg(&state.people.clone(), 10)
+    generate_fake_reg(&state.people.clone(), payload.num_people as usize)
         .map(|r| (StatusCode::OK, Json(r)))
         .map_err(|err| {
             log::error!("{:?}", err);
