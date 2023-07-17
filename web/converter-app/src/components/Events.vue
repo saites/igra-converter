@@ -31,10 +31,18 @@ const order = [
 
 const isSolo = Object.fromEntries(order.map((o) => [o.id, o.solo]));
 
+// Restructure the registration data and validation results
+// into something easier to iterate over when constructing the display.
 const info = computed(() => {
   let { events, relevant, partners, issues } = props
   if (!events || !relevant || !partners, !issues) { return [] }
 
+  // Convert partner information to a map
+  // of event -> [ go-round -> [ partner index -> IGRA number ] ].
+  // That is, dbPartners["event"][ri][pi]
+  // is the data record of the pi-th partner they listed 
+  // for the ri-th go-round of event "event",
+  // assuming they entered something there and it could be matched. 
   const dbPartners = partners.reduce((acc, p) => {
     if (1 > p.round || p.round > 2) { return acc }
     
@@ -44,23 +52,39 @@ const info = computed(() => {
     return acc
   }, {})
   
+  // Convert partner issues to a map
+  // of event -> [ round -> [ partner index -> {problem, fix} ] ].
+  // problems["event"][ri][pi] gives the {problem, fix}
+  // associated with the pi-th partner of the ri-th round of event "event".
+  //
+  // This only applies to partner issues:
+  // i.e., those with problem.data that includes an event, round, and index.
   const problems = issues.reduce((acc, i) => {
-    const data = i.problem.data
-    if (!data.round || !data.event 
-      || 1 > data.round || data.round > 2
-      || data.index === undefined
-      || 0 > data.index || data.index > 1
-      || !i.fix.data
+    if (!i || !i.problem || !i.fix) { return acc }
+
+    const pdata = i.problem.data
+    if (!pdata 
+      || !pdata.event || !pdata.round || pdata.index === undefined
+      || 1 > pdata.round || pdata.round > 2
+      || 0 > pdata.index || pdata.index > 1
       ) { 
       return acc 
     }
     
-    const e = acc[data.event] ?? [[[]], [[]]]
-    e[data.round - 1][data.index].push(i.fix.data)
-    acc[data.event] = e
+    const e = acc[pdata.event] ?? []
+    const r = e[pdata.round - 1] ?? []
+    const prob_to_fixes = r[pdata.index] ?? {}
+    const fixes = prob_to_fixes[i.problem.name] ?? []
+    fixes.push(i.fix)
+    prob_to_fixes[i.problem.name] = fixes
+    r[pdata.index] = prob_to_fixes
+    e[pdata.round - 1] = r
+    acc[pdata.event] = e
     return acc
   }, {})
 
+  // info gathers together the partner info for the event,
+  // constructing an object of the above values.
   const info = events.reduce((acc, e) => {
     if (1 > e.round || e.round > 2) { return acc }
 
@@ -77,13 +101,21 @@ const info = computed(() => {
     return acc
   }, {})
 
+  // Present the registration information in a consistent order,
+  // defined by the above collection.
   return order.map((o) => { 
     return {
       "o": o, 
       "name": o.name, 
+      // info["some event"].rounds[i] is True 
+      // iff this person is registered for that event and go-round.
       "rounds": info[o.id]?.rounds ?? [false, false],
-      "partners": info[o.id]?.partners ?? [[], []], 
+      // regPartners[round][i] is the i-th partner they listed when registering.
       "regPartners": info[o.id]?.regPartners ?? [[], []], 
+      // partners[round][i] is the IGRA number
+      // of the i-th partner they listed when registering, if found.
+      "partners": info[o.id]?.partners ?? [[], []], 
+      // problems[round]
       "problems": info[o.id]?.problems ?? [[], []],
     }
   })
@@ -101,112 +133,90 @@ const showEvents = ref(false);
 </script>
 
 <template>
-  <accordion class="w-[600px] min-w-full max-w-screen-lg"> 
+  <accordion> 
     <template #summary>
-      <div class="bg-green-300">
+      <header class="ps-8 w-full text-lg bg-green-300">
       {{events.length}} Go-Rounds
-      </div>
+      </header>
     </template>
 
     <template #content>
-      <div class="item-grid">
-        <th>Event</th>
-        <th>1st Go</th>
-        <th>2nd Go</th>
+      <div class="item-grid my-2">
+        <div class="col-span-3 grid grid-cols-3 bg-slate-300 w-full">
+          <th>Event</th>
+          <th>1st Go</th>
+          <th>2nd Go</th>
+        </div>
 
         <template v-for="e in info">
-          <div class="item text-end">{{e.name}}</div>
+          <div class="item text-end font-bold">{{e.name}}</div>
           <div class="item text-center">{{e.rounds[0] ? "X" : ""}}</div>
           <div class="item text-center">{{e.rounds[1] ? "X" : ""}}</div>
 
-          <template v-if="e.regPartners[0].length > 0">
-            <div class="place-self-start ms-4 col-span-3">
-              <header>Go 1 Partners:</header>
-              <div>
-                Given: {{e.regPartners[0][0] ?? "----"}}
-                <template v-if="e.regPartners[0][1]">&amp; {{e.regPartners[0][1]}}
-                </template>
-              </div>
+          <template v-if="!e.o.solo">
+            <template v-for="(reg_part, round_i) in e.regPartners">
+              <div class="place-self-start px-4 col-span-3 w-full">
 
-              <div v-if="e.partners[0].length > 0">
-                <div v-for="p in e.partners[0]">
-                Found: {{p.igra_number}} {{p.first_name}} {{p.last_name}}
-                </div>
-              </div>
-              <div v-else>
-                No Match Found
-              </div>
+                <header>Go {{round_i+1}} Partners:</header>
 
-              <div v-if="e.problems[0].length > 0">
-                <div v-if="e.problems[0][0]">
-                  <div>No perfect match for: {{e.regPartners[0][0]}}</div>
-                  <ul>
-                    <li v-for="pm in e.problems[0][0]">
-                      Possible Match: 
-                      {{relevant[pm]?.igra_number}} |
-                      {{relevant[pm]?.legal_first}}
-                      {{relevant[pm]?.legal_last}}  aka
-                      {{relevant[pm]?.first_name}}
-                      {{relevant[pm]?.last_name}}
-                    </li>
-                  </ul>
+                <div class="ps-4" v-for="(p, reg_pi) in reg_part">
+                  Partner {{reg_pi+1}}: {{p ?? "----"}}
+
+                  <div v-if="e.partners[round_i][reg_pi]"
+                      class="ps-4" 
+                      :class="{'good': !e.problems[round_i][reg_pi],
+                               'err': e.problems[round_i][reg_pi], }"
+                    >
+                    Found Match: 
+                    {{e.partners[round_i][reg_pi].igra_number}} 
+                    {{e.partners[round_i][reg_pi].first_name}} 
+                    {{e.partners[round_i][reg_pi].last_name}} 
+
+                    <div class="err" 
+                      v-if="e.problems[round_i][reg_pi]?.UnregisteredPartner">
+                      This partner is not registered.
+                    </div>
+                  </div>
+
+                  <div v-else class="err ps-4">
+                    No perfect match. 
+                    <ul v-if="e.problems[round_i][reg_pi]?.UnknownPartner?.map((fix) => relevant[fix.data]).filter((pm) => pm)">
+                      <li v-for="pm in e.problems[round_i][reg_pi]?.UnknownPartner?.map((fix) => relevant[fix.data]).filter((pm) => pm)">
+                        Possible Match: 
+                        {{pm.igra_number}} |
+                        {{pm.legal_first}}
+                        {{pm.legal_last}}  aka
+                        {{pm.first_name}}
+                        {{pm.last_name}}
+                      </li>
+                    </ul>
+                  </div>
                 </div>
+
               </div>
-            </div>
+            </template>
           </template>
-
-          <template v-if="e.regPartners[1].length > 0">
-            <div class="place-self-start ms-4 col-span-3">
-              <header>Go 2 Partners:</header>
-              <div>
-                Given: {{e.regPartners[1][0] ?? "----"}}
-                <template v-if="e.regPartners[1][1]">&amp; {{e.regPartners[1][1]}}
-                </template>
-              </div>
-              
-              <div v-if="e.partners[1]">
-                <div v-for="p in e.partners[1]">
-                Found: {{p.igra_number}} {{p.first_name}} {{p.last_name}}
-                </div>
-              </div>
-              <div v-else>
-                No Match Found
-              </div>
-
-              <div v-if="e.problems[1].length > 0">
-                <div v-if="e.problems[1][0]">
-                  <div>No perfect match for: {{e.regPartners[1][0]}}</div>
-                  <ul>
-                    <li v-for="pm in e.problems[1][0]">
-                      Possible Match: 
-                      {{relevant[pm]?.igra_number}} |
-                      {{relevant[pm]?.legal_first}}
-                      {{relevant[pm]?.legal_last}}  aka
-                      {{relevant[pm]?.first_name}}
-                      {{relevant[pm]?.last_name}}
-                    </li>
-                  </ul>
-                </div>
-              </div>
-
-            </div>
-            
-          </template>
-
         </template>
       </div>
     </template>
   </accordion>
 </template>
 
-<style scoped>
+<style>
 .item-grid {
-  @apply grid grid-cols-3 justify-items-center gap-y-3;
+  @apply grid grid-cols-3 justify-items-center gap-y-2 bg-gray-100;
   @apply border-t-2 border-b-2 border-indigo-500 w-full;
 }
 
 .item {
   @apply border-t-2 border-indigo-500 w-full;
+}
+
+.err {
+  @apply bg-red-300;
+}
+.good {
+  @apply bg-green-300;
 }
 </style>
 

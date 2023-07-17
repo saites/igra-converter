@@ -24,7 +24,7 @@ const generating = ref(false)
 const editArea = ref(null)
 const highlightArea = ref(null)
 const highlightHeight = ref(null)
-const generationOptions = ref({ "num_people": 10, })
+const nEntries = ref(20)
 
 onMounted(() => {
   highlightHeight.value = editArea.style?.height
@@ -69,14 +69,13 @@ async function generate() {
         "Content-Type": "application/json",
       },
       referrerPolicy: "no-referrer", 
-      body: JSON.stringify(generationOptions.value),
+      body: JSON.stringify({"num_people": Number(nEntries.value) ?? 10}),
     });
 
     if (!response.ok) {
       const errObj = await response.json();
       throw new Error(errObj["error"])
     } 
-    
     registrationData.value = JSON.stringify(await response.json(), null, 2)
     generating.value = false;
     await validate();
@@ -117,8 +116,8 @@ useResizeObserver(editArea, (entries) => {
 </script>
 
 <template>
-<div id="main">
-  <section>
+<div>
+  <section class="pb-4">
     <div class="grid">
       <textarea id="editArea" ref="editArea"
            :disabled="generating || validating"
@@ -138,6 +137,9 @@ useResizeObserver(editArea, (entries) => {
     </div>
 
       <div class="flex justify-evenly">
+        <label for="nEntries"># Entries: {{nEntries}}</label>
+        <input id="nEntries" type="range" v-model.number="nEntries" min="2" max="200">
+
         <button :disabled="generating || validating" @click="generate">
           <svg v-if="generating" 
             class="inline animate-spin h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
@@ -164,23 +166,15 @@ useResizeObserver(editArea, (entries) => {
   </div>
 
   <my-grid v-else 
-      :results="validationResult?.results"
-      :relevant="validationResult?.relevant"
+      :results="validationResult?.results ?? []"
+           :relevant="validationResult?.relevant ?? {}"
   >
   </my-grid>
 </div>
 
 </template>
 
-<style scoped>
-#main {
-  @apply grid grid-cols-1 justify-items-center;
-}
-
-#main > * {
-  @apply max-w-screen-md w-full;
-}
-
+<style>
 button {
   @apply rounded bg-indigo-500 hover:bg-indigo-600 text-white p-2 w-24 h-16;
   @apply disabled:bg-gray-500;
@@ -188,16 +182,16 @@ button {
 }
 
 #editArea, #highlightArea {
-  @apply w-full h-96 overflow-y-scroll;
+  @apply h-96 overflow-y-scroll;
   border: 0;
   margin: 10px;
   display: block;
   overflow-x: auto;
-  padding: 0;
+  padding: 0!important;
 }
 
 #editArea, #highlightArea, #highlightArea * {
-  @apply  text-base leading-6;
+  @apply text-base leading-6;
   font-family: monospace;
 }
 

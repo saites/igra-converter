@@ -1,7 +1,7 @@
 
 .PHONY: up down prod \
 	clean-volumes clean-web \
-	vite node_modules \
+	vite node_modules npm-update \
 	serve-local
 
 UID := $(shell id -u)
@@ -50,10 +50,8 @@ node_modules:
 vite: 
 	$(VITE) npm run dev
 
-tailwind:
-	$(VITE) npm install -D tailwindcss postcss autoprefixer
-	$(VITE) npx tailwindcss init 
-
+npm-update:
+	$(VITE) npm update --save
 
 clean-web:
 	rm -rf web/dist
