@@ -213,6 +213,12 @@ const showEvents = ref(false);
                       v-if="e.problems[round_i]?.[reg_pi]?.UnregisteredPartner">
                       This partner is not registered for this rodeo.
                     </div>
+                    
+                    <div class="err" 
+                      v-if="e.problems[round_i]?.[reg_pi]?.MismatchedPartners">
+                      This partner is registered for this rodeo,
+                      but they do not mutually list the registrant as partner for this go-round.
+                    </div>
 
                   </div>
 
@@ -224,7 +230,7 @@ const showEvents = ref(false);
                         {{pm.igra_number}} |
                         {{pm.legal_first}}
                         {{pm.legal_last}}
-                        <template v-if="pm.first_name || pm.last_name">
+                        <template v-if="pm.first_name !== pm.legal_first || pm.last_name !== pm.legal_last">
                         aka {{pm.first_name}} {{pm.last_name}}
                         </template>
                       </li>
