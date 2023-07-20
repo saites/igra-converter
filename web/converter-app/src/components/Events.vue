@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import Accordion from './Accordion.vue'
+import Pinger from './Pinger.vue'
 import { friendlyProblem, friendlyFix } from '@/utils.js'
 import { computed, ref } from 'vue'
 
@@ -44,59 +45,71 @@ const info = computed(() => {
   // for the ri-th go-round of event "event",
   // assuming they entered something there and it could be matched. 
   const dbPartners = partners.reduce((acc, p) => {
-    if (1 > p.round || p.round > 2) { return acc }
-    
-    const e = acc[p.event] ?? [[], []]
-    e[p.round - 1].push(relevant[p.igra_number])
+    const e = acc[p.event] ?? {} 
+    const round_partners = e[p.round] ?? {}
+    round_partners[p.index] = relevant[p.igra_number]
+    e[p.round] = round_partners
     acc[p.event] = e
     return acc
   }, {})
   
-  // Convert partner issues to a map
-  // of event -> [ round -> [ partner index -> {problem, fix} ] ].
+  // Convert partner issues to maps.
   // problems["event"][ri][pi] gives the {problem, fix}
   // associated with the pi-th partner of the ri-th round of event "event".
-  //
-  // This only applies to partner issues:
-  // i.e., those with problem.data that includes an event, round, and index.
-  const problems = issues.reduce((acc, i) => {
-    if (!i || !i.problem || !i.fix) { return acc }
-
+  const tooFew = {}
+  const tooMany = {}
+  const invalidRounds = {}
+  const problems = {} // unknown, unregistered, or mismatched
+  issues.filter((i) => i?.problem?.data?.event && i?.fix).forEach((i) => {
     const pdata = i.problem.data
-    if (!pdata 
-      || !pdata.event || !pdata.round || pdata.index === undefined
-      || 1 > pdata.round || pdata.round > 2
-      || 0 > pdata.index || pdata.index > 1
-      ) { 
-      return acc 
+
+    if (i.problem.name === "TooFewPartners") {
+      const tf_e = tooFew[pdata.event] ?? {}
+      tf_e[pdata.round] = true
+      tooFew[pdata.event] = tf_e
+      return
+    } else if (i.problem.name === "TooManyPartners") {
+      const tm_e = tooMany[pdata.event] ?? {}
+      tm_e[pdata.round] = true
+      tooMany[pdata.event] = tm_e
+      return
+    } else if (i.problem.name === "InvalidRoundID") {
+      const ir_e = invalidRounds[pdata.event] ?? {}
+      ir_e[pdata.round] = true
+      invalidRounds[pdata.event] = ir_e
+      return
     }
     
-    const e = acc[pdata.event] ?? []
-    const r = e[pdata.round - 1] ?? []
+    if (pdata.index === undefined) {
+      return
+    }
+    
+    const e = problems[pdata.event] ?? {}
+    const r = e[pdata.round] ?? {}
     const prob_to_fixes = r[pdata.index] ?? {}
     const fixes = prob_to_fixes[i.problem.name] ?? []
     fixes.push(i.fix)
     prob_to_fixes[i.problem.name] = fixes
     r[pdata.index] = prob_to_fixes
-    e[pdata.round - 1] = r
-    acc[pdata.event] = e
-    return acc
+    e[pdata.round] = r
+    problems[pdata.event] = e
   }, {})
 
   // info gathers together the partner info for the event,
   // constructing an object of the above values.
   const info = events.reduce((acc, e) => {
-    if (1 > e.round || e.round > 2) { return acc }
-
     const r = acc[e.rodeoEventRelId] ?? {
       "rounds": [false, false], 
-      "partners": dbPartners[e.rodeoEventRelId] ?? [[], []], 
-      "regPartners": [[], []],
-      "problems": problems[e.rodeoEventRelId] ?? [[], []],
+      "partners": dbPartners[e.rodeoEventRelId] ?? {},
+      "regPartners": {},
+      "problems": problems[e.rodeoEventRelId] ?? {},
+      "tooFew": tooFew[e.rodeoEventRelId] ?? {},
+      "tooMany": tooMany[e.rodeoEventRelId] ?? {},
+      "invalidRounds": invalidRounds[e.rodeoEventRelId] ?? {},
     }
 
-    r.rounds[e.round - 1] = true 
-    r.regPartners[e.round - 1] = e.partners
+    r.rounds[e.round] = true 
+    r.regPartners[e.round] = e.partners
     acc[e.rodeoEventRelId] = r 
     return acc
   }, {})
@@ -111,12 +124,14 @@ const info = computed(() => {
       // iff this person is registered for that event and go-round.
       "rounds": info[o.id]?.rounds ?? [false, false],
       // regPartners[round][i] is the i-th partner they listed when registering.
-      "regPartners": info[o.id]?.regPartners ?? [[], []], 
+      "regPartners": info[o.id]?.regPartners ?? {}, 
       // partners[round][i] is the IGRA number
       // of the i-th partner they listed when registering, if found.
-      "partners": info[o.id]?.partners ?? [[], []], 
-      // problems[round]
-      "problems": info[o.id]?.problems ?? [[], []],
+      "partners": info[o.id]?.partners ?? {}, 
+      "problems": info[o.id]?.problems ?? {}, 
+      "tooFew": info[o.id]?.tooFew ?? {},
+      "tooMany": info[o.id]?.tooMany ?? {},
+      "invalidRounds": info[o.id]?.invalidRounds ?? {},
     }
   })
 })
@@ -135,7 +150,7 @@ const showEvents = ref(false);
 <template>
   <accordion> 
     <template #summary>
-      <header class="ps-8 w-full text-lg bg-green-300">
+      <header class="ps-4 w-full text-lg bg-green-300">
       {{events.length}} Go-Rounds
       </header>
     </template>
@@ -150,22 +165,44 @@ const showEvents = ref(false);
 
         <template v-for="e in info">
           <div class="item text-end font-bold">{{e.name}}</div>
-          <div class="item text-center">{{e.rounds[0] ? "X" : ""}}</div>
           <div class="item text-center">{{e.rounds[1] ? "X" : ""}}</div>
+          <div class="item text-center">{{e.rounds[2] ? "X" : ""}}</div>
 
           <template v-if="!e.o.solo">
             <template v-for="(reg_part, round_i) in e.regPartners">
-              <div class="place-self-start px-4 col-span-3 w-full">
+              <div class="place-self-start px-4 pb-2 col-span-3 w-full">
 
-                <header>Go {{round_i+1}} Partners:</header>
+                <header>Go {{round_i}} Partners:</header>
+                
+                <div v-if="e.invalidRounds[round_i]" class="err ms-4 my-2">
+                  <pinger color="bg-red-800">
+                    <span class="ps-4">This event wasn't expected to have go-round {{round_i}}.
+                      This is likely a developer bug :-/
+                    </span>
+                  </pinger>
+                </div>
+                
+                <div v-if="e.tooMany[round_i]" class="err ms-4 my-2">
+                  <pinger color="bg-red-800">
+                    <span class="ps-4">There are too many partners listed for this go-round.
+                      This is likely a developer bug :-/
+                    </span>
+                  </pinger>
+                </div>
+
+                <div v-if="e.tooFew[round_i]" class="err ms-4 my-2" >
+                  <pinger color="bg-red-800">
+                    <span class="ps-4">The registrant did not list enough partners for this go-round.</span>
+                  </pinger>
+                </div>
 
                 <div class="ps-4" v-for="(p, reg_pi) in reg_part">
-                  Partner {{reg_pi+1}}: {{p ?? "----"}}
+                  Partner {{reg_pi + 1}}: {{p ?? "----"}}
 
-                  <div v-if="e.partners[round_i][reg_pi]"
+                  <div v-if="e.partners[round_i]?.[reg_pi]"
                       class="ps-4" 
-                      :class="{'good': !e.problems[round_i][reg_pi],
-                               'err': e.problems[round_i][reg_pi], }"
+                      :class="{'good': !e.problems[round_i]?.[reg_pi],
+                               'err': e.problems[round_i]?.[reg_pi], }"
                     >
                     Found Match: 
                     {{e.partners[round_i][reg_pi].igra_number}} 
@@ -173,21 +210,23 @@ const showEvents = ref(false);
                     {{e.partners[round_i][reg_pi].last_name}} 
 
                     <div class="err" 
-                      v-if="e.problems[round_i][reg_pi]?.UnregisteredPartner">
-                      This partner is not registered.
+                      v-if="e.problems[round_i]?.[reg_pi]?.UnregisteredPartner">
+                      This partner is not registered for this rodeo.
                     </div>
+
                   </div>
 
-                  <div v-else class="err ps-4">
+                  <div v-else-if="!e.tooFew[round_i]" class="err ps-4">
                     No perfect match. 
-                    <ul v-if="e.problems[round_i][reg_pi]?.UnknownPartner?.map((fix) => relevant[fix.data]).filter((pm) => pm)">
-                      <li v-for="pm in e.problems[round_i][reg_pi]?.UnknownPartner?.map((fix) => relevant[fix.data]).filter((pm) => pm)">
+                    <ul v-if="e.problems[round_i]?.[reg_pi]?.UnknownPartner?.map((fix) => relevant[fix.data]).filter((pm) => pm)">
+                      <li v-for="pm in e.problems[round_i]?.[reg_pi]?.UnknownPartner?.map((fix) => relevant[fix.data]).filter((pm) => pm)">
                         Possible Match: 
                         {{pm.igra_number}} |
                         {{pm.legal_first}}
-                        {{pm.legal_last}}  aka
-                        {{pm.first_name}}
-                        {{pm.last_name}}
+                        {{pm.legal_last}}
+                        <template v-if="pm.first_name || pm.last_name">
+                        aka {{pm.first_name}} {{pm.last_name}}
+                        </template>
                       </li>
                     </ul>
                   </div>
@@ -204,12 +243,12 @@ const showEvents = ref(false);
 
 <style>
 .item-grid {
-  @apply grid grid-cols-3 justify-items-center gap-y-2 bg-gray-100;
-  @apply border-t-2 border-b-2 border-indigo-500 w-full;
+  @apply grid grid-cols-3 justify-items-center pb-2 bg-gray-100;
+  @apply border-y-2 border-y-indigo-500 border-x-2 border-x-indigo-300 w-full;
 }
 
 .item {
-  @apply border-t-2 border-indigo-500 w-full;
+  @apply border-t-2 border-indigo-500 w-full py-1;
 }
 
 .err {

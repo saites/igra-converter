@@ -77,7 +77,7 @@ async function generate() {
       <textarea id="editArea" ref="editArea"
            :disabled="generating || validating"
            spellcheck="false"
-           :value="registrationData"
+           v-model="registrationData"
            placeholder="Paste JSON registration entries here or click 'Generate' to generate some random data."
       ></textarea>
       

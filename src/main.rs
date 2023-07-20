@@ -382,6 +382,19 @@ fn generate_fake_reg(people: &Vec<PersonRecord>, n: usize) -> MyResult<Vec<Regis
         let n_events = rng.gen_range(0..=event_mod) + 2;
         let events = Vec::<>::with_capacity(n_events);
 
+        // The database wasn't designed with non-US address in mind.
+        let (region, country) = if p.state != "FC" {
+            if validation::CANADIAN_REGIONS.contains(&p.state) {
+                (p.region().map_or(p.state.clone(), |re| re.to_string()),
+                "Canada".to_string())
+            } else {
+                (p.region().map_or(p.state.clone(), |re| re.to_string()),
+                    "United States".to_string())
+            }
+        } else {
+            ("Sonora".to_string(), "Mexico".to_string())
+        };
+
         let mut r = Registration {
             id: rng.gen(),
             stalls: "".to_string(),
@@ -400,10 +413,8 @@ fn generate_fake_reg(people: &Vec<PersonRecord>, n: usize) -> MyResult<Vec<Regis
                     address_line_1: p.address.clone(),
                     address_line_2: "".to_string(),
                     city: p.city.clone(),
-                    region: p.region().map_or(
-                        p.state.clone(),
-                        |re| re.to_string()),
-                    country: "United States".to_string(),
+                    region,
+                    country,
                     zip_code: p.zip.clone(),
                     cell_phone_no: format_phone(&p.cell_phone),
                     home_phone_no: format_phone(&p.home_phone),

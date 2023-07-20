@@ -19,6 +19,8 @@ $(RANDOM_DBF):
 serve-local: $(RANDOM_DBF) 
 	cargo run $(CARGO_RUN_ARGS) serve $(RANDOM_DBF) 8080
 
+build:
+	$(COMPOSE) run --rm api-server cargo build --release
 
 up: $(BUILD_DIRS)
 	$(COMPOSE) up

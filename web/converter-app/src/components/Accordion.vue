@@ -1,5 +1,13 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, onUnmounted } from 'vue'
+
+export interface Props {
+  open?: bool,
+}
+
+const props = withDefaults(defineProps<Props>(), {
+  open: false,
+})
 
 const details = ref(null);
 const summary = ref(null);
@@ -9,12 +17,15 @@ let animation = null;
 let isClosing = false;
 let isExpanding = false;
 
+onUnmounted(() => {
+  if (animation) { animation.cancel() }
+})
 
 function click(e) {
   if (!details.value || !summary.value || !content.value) { return }
   details.value.style.overflow = 'hidden'
   if (isClosing || !details.value.open) {
-    open()
+    openDetails()
   } else if (isExpanding || details.value.open) {
     shrink()
   }
@@ -39,10 +50,10 @@ function shrink() {
   animation.oncancel = () => isClosing = false
 }
 
-function open() {
+function openDetails() {
   details.value.style.height = `${details.value.offsetHeight}px`
   details.value.open = true
-  window.requestAnimationFrame(() => expand())
+  requestAnimationFrame(() => expand())
 }
 
 function expand() {

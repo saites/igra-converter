@@ -1,5 +1,5 @@
 use eddie::DamerauLevenshtein;
-use phf::phf_map;
+use phf::{phf_map, phf_set};
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::collections::{hash_map, HashMap};
@@ -610,46 +610,67 @@ impl<'a> EntryValidator<'a> {
                 && member.ssn == ssn
         };
 
+        // TODO: clean this up, as it's hard to follow the returns.
+        let m;
         if !is_member {
             candidates.retain(|p| exact(p));
             if candidates.is_empty() {
                 // They say they're not a member, and they're probably right.
-                proc.issues.push(Suggestion { problem: Problem::NotAMember, fix: Fix::AddNewMember, })
+                proc.issues.push(Suggestion {
+                    problem: Problem::NotAMember, fix: Fix::AddNewMember
+                });
+                return;
             } else {
-                // They say they're not a member, but these look really close.
-                proc.push_all(Problem::MaybeAMember, candidates, relevant);
+                // They say they're not a member, but we found really close matches.
+                if candidates.len() == 1 {
+                    // Since there's only a single match,
+                    // mark them found to highlight field differences.
+                    m = candidates[0];
+                    proc.push_person(Problem::MaybeAMember, m, relevant);
+                } else {
+                    proc.push_all(Problem::MaybeAMember, candidates, relevant);
+                    return;
+                }
             }
-            return;
-        }
-
-        if candidates.is_empty() {
+        } else if candidates.is_empty() {
             // They say they're a member, but there aren't even close matches.
             proc.issues.push(Suggestion {
                 problem: Problem::NoPerfectMatch,
                 fix: Fix::ContactRegistrant,
             });
             return;
+        } else {
+            let mut filtered = candidates.iter()
+                .filter(|member| exact(member) && member.igra_number == igra_num);
+            let perfect = filtered.next();
+            let maybe = filtered.next();
+
+            if maybe.is_some() {
+                // We don't have a single, exact match, so add close matches.
+                // TODO: Treat the "found" field to mean "very highly likely",
+                //   and go ahead and fill it in with a non-perfect match
+                //   when other signals point to the right person.
+                proc.push_all(Problem::NoPerfectMatch, candidates.into_iter().take(30), relevant);
+                return;
+            }
+
+            if let Some(p) = perfect {
+                m = p
+            } else {
+                // Even though we don't have a perfect match,
+                // we only have a single probable match.
+                assert!(candidates.len() >= 1, "candidates should not be empty");
+                m = candidates[0];
+
+                proc.issues.push(Suggestion {
+                    problem: Problem::NoPerfectMatch,
+                    fix: Fix::UseThisRecord(IGRANumber(m.igra_number.clone()))
+                });
+            }
         }
 
-        // TODO: assert in main that every record in the database has a unique IGRA number.
-        // Under the assumption that IGRA numbers are unique,
-        // the first record that has a matching IGRA number
-        // and exactly matching demographic details
-        // must be the person we're looking for.
-        let perfect = candidates.iter()
-            .filter(|member| exact(member) && member.igra_number == igra_num)
-            .next();
-
-        if perfect.is_none() {
-            // We didn't find them, so add close matches.
-            proc.push_all(Problem::NoPerfectMatch, candidates.into_iter().take(30), relevant);
-            return;
-        }
-
-        // We found them. Update the report and validate their info.
-        let m = perfect.unwrap();
         proc.found = Some(m.igra_number.as_str());
-        relevant.insert(&m.igra_number, *m);
+        relevant.insert(&m.igra_number, m);
 
         // This macro checks if two strings are equal ignoring ascii case,
         // and if not, adds an issue noting the database field should be updated
@@ -678,6 +699,11 @@ impl<'a> EntryValidator<'a> {
 
         check!(RegF::Email, m.email, who.address.email);
         check!(RegF::Association, m.association, who.association.member_assn);
+        check!(RegF::DateOfBirth, m.birthdate, who.dob.dos());
+
+        if let Some((_, ssn)) = m.ssn.rsplit_once('-') {
+            check!(RegF::SSN, ssn, who.ssn)
+        }
 
         // In the database, most people performance names match their legal names.
         // If the user left it blank, we probably should should ignore it.
@@ -752,8 +778,7 @@ impl<'a> EntryValidator<'a> {
 pub struct Processed<'a> {
     /// This is the original registration information they provided.
     pub registration: &'a Registration,
-    /// If they say they are a member
-    /// and we can find a single record matching their registration details,
+    /// When we have very high confidence that we found the correct person,
     /// this will hold the associated IGRA number.
     pub found: Option<&'a str>,
     /// These are issues we found with their registration.
@@ -808,12 +833,22 @@ impl<'a> Processed<'a> {
     where I: IntoIterator<Item=&'a PersonRecord>
     {
         for p in people.into_iter() {
-            self.issues.push(Suggestion {
-                problem: problem.clone(),
-                fix: Fix::UseThisRecord(IGRANumber(p.igra_number.clone())),
-            });
-            relevant.insert(&p.igra_number, p);
+            self.push_person(problem.clone(), p, relevant);
         }
+    }
+
+    #[inline]
+    fn push_person(&mut self,
+                   problem: Problem,
+                   person: &'a PersonRecord,
+                   relevant: &mut HashMap<&'a str, &'a PersonRecord>,
+    )
+    {
+        self.issues.push(Suggestion {
+            problem,
+            fix: Fix::UseThisRecord(IGRANumber(person.igra_number.clone())),
+        });
+        relevant.insert(&person.igra_number, person);
     }
 }
 
@@ -1411,6 +1446,10 @@ impl PersonRecord {
         REGIONS.get(&self.state)
     }
 }
+
+pub static CANADIAN_REGIONS: phf::Set<&'static str> = phf_set! {
+    "AB", "BC", "LB", "MB", "NB", "NF", "NS", "NT", "PE", "PQ", "SK", "YT",
+};
 
 #[allow(unused)]
 #[derive(Deserialize, Serialize, Debug, Copy, Clone, Eq, Hash, PartialEq)]
