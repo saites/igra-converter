@@ -15,7 +15,7 @@ use crate::bktree;
 use crate::bktree::BKTree;
 use crate::robin::EventID::Known;
 use crate::robin::{Event, EventID, Registration};
-use crate::xbase::{DBaseRecord, DBaseResult, Decimal, Field, Header, TableReader};
+use crate::xbase::{DBaseRecord, DBaseResult, Decimal, Field, Header, TableReader, FieldDescriptor, FieldType};
 
 pub fn read_reg<P: AsRef<std::path::Path>>(path: P) -> Result<Vec<Registration>, Box<dyn Error>> {
     Ok(serde_json::from_reader(BufReader::new(File::open(path)?))?)
@@ -168,10 +168,13 @@ pub struct Report<'a> {
 /// The name portion will hold the (possibly empty) remaining string,
 /// stripped of whitespace and '|'.
 pub fn split_partner(s: &str) -> (Option<&str>, &str) {
-    let s = s.trim();
-
     fn ignored(c: char) -> bool {
         c == '|' || c.is_whitespace()
+    }
+    
+    let s = s.trim_matches(ignored);
+    if s.is_empty() {
+        return (None, s);
     }
 
     let name_start = s.find(|c: char| !c.is_ascii_digit());
@@ -377,7 +380,7 @@ impl<'a> EntryValidator<'a> {
                 (false, false) => {
                     // Have both, so require both field sets to match.
                     first.eq_ignore_ascii_case(&found.legal_first)
-                        && first.eq_ignore_ascii_case(&found.legal_last)
+                        && last.eq_ignore_ascii_case(&found.legal_last)
                         && p_first.eq_ignore_ascii_case(&found.first_name)
                         && p_last.eq_ignore_ascii_case(&found.last_name)
                 }
@@ -1202,6 +1205,57 @@ pub fn read_personnel<R: io::Read>(
 }
 
 impl DBaseRecord for PersonRecord {
+    fn describe(&self) -> Vec<FieldDescriptor> {
+        vec![
+            FieldDescriptor{ name: "IGRA_NUM".to_string(), field_type: FieldType::Character, 
+                length: 4, decimal_count: 10, work_area_id: 0, example: 8 },
+            FieldDescriptor{ name: "STATE_ASSN".to_string(),field_type: FieldType::Character, 
+                length: 6, decimal_count: 10, work_area_id: 0, example: 8 },
+            FieldDescriptor{ name: "BIRTH_DATE".to_string(),field_type: FieldType::Character, 
+                length: 8, decimal_count: 10, work_area_id: 0, example: 8 },
+            FieldDescriptor{ name: "SSN".to_string(), field_type: FieldType::Character, 
+                length: 11, decimal_count: 10, work_area_id: 0, example: 8 },
+            FieldDescriptor{ name: "DIVISION".to_string(),field_type: FieldType::Character, 
+                length: 1, decimal_count: 10, work_area_id: 0, example: 8 },
+            FieldDescriptor{ name: "LAST_NAME".to_string(), field_type: FieldType::Character, 
+                length: 20, decimal_count: 10, work_area_id: 0, example: 8 },
+            FieldDescriptor{ name: "FIRST_NAME".to_string(),field_type: FieldType::Character, 
+                length: 17, decimal_count: 10, work_area_id: 0, example: 8 },
+            FieldDescriptor{ name: "LEGAL_LAST".to_string(),field_type: FieldType::Character, 
+                length: 20, decimal_count: 10, work_area_id: 0, example: 8 },
+            FieldDescriptor{ name: "LEGALFIRST".to_string(),field_type: FieldType::Character, 
+                length: 17, decimal_count: 10, work_area_id: 0, example: 8 },
+            FieldDescriptor{ name: "ID_CHECKED".to_string(),field_type: FieldType::Character, 
+                length: 1, decimal_count: 10, work_area_id: 0, example: 8 },
+            FieldDescriptor{ name: "SEX".to_string(), field_type: FieldType::Character, 
+                length: 1, decimal_count: 10, work_area_id: 0, example: 8 },
+            FieldDescriptor{ name: "ADDRESS".to_string(), field_type: FieldType::Character, 
+                length: 30, decimal_count: 10, work_area_id: 0, example: 8 },
+            FieldDescriptor{ name: "CITY".to_string(), field_type: FieldType::Character, 
+                length: 30, decimal_count: 10, work_area_id: 0, example: 8 },
+            FieldDescriptor{ name: "STATE".to_string(), field_type: FieldType::Character, 
+                length: 2, decimal_count: 10, work_area_id: 0, example: 8 },
+            FieldDescriptor{ name: "ZIP".to_string(), field_type: FieldType::Character, 
+                length: 10, decimal_count: 10, work_area_id: 0, example: 8 },
+            FieldDescriptor{ name: "HOME_PHONE".to_string(),field_type: FieldType::Character, 
+                length: 10, decimal_count: 13, work_area_id: 0, example: 8 },
+            FieldDescriptor{ name: "CELL_PHONE".to_string(),field_type: FieldType::Character, 
+                length: 10, decimal_count: 13, work_area_id: 0, example: 8 },
+            FieldDescriptor{ name: "E_MAIL".to_string(), field_type: FieldType::Character, 
+                length: 30, decimal_count: 10, work_area_id: 0, example: 8 },
+            FieldDescriptor{ name: "STATUS".to_string(), field_type: FieldType::Character, 
+                length: 1, decimal_count: 10, work_area_id: 0, example: 8 },
+            FieldDescriptor{ name: "FIRSTRODEO".to_string(),field_type: FieldType::Character, 
+                length: 8, decimal_count: 10, work_area_id: 0, example: 8 },
+            FieldDescriptor{ name: "LASTUPDATE".to_string(),field_type: FieldType::Character, 
+                length: 8, decimal_count: 10, work_area_id: 0, example: 8 },
+            FieldDescriptor{ name: "SORT_DATE".to_string(), field_type: FieldType::Character, 
+                length: 8, decimal_count: 10, work_area_id: 0, example: 8 },
+            FieldDescriptor{ name: "EXT_DOLLAR".to_string(),field_type: FieldType::Numeric, 
+                length: 10, decimal_count: 10, work_area_id: 0, example: 8 },
+        ]
+    }
+
     fn to_record(&self) -> Vec<Field> {
         vec![
             Field::Character(self.igra_number.clone()),

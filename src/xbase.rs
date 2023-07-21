@@ -154,12 +154,12 @@ pub enum Field {
 
 #[derive(Debug, Clone)]
 pub struct FieldDescriptor {
-    name: String,
-    field_type: FieldType,
-    length: usize,
-    decimal_count: u8,
-    work_area_id: u16,
-    example: u8,
+    pub name: String,
+    pub field_type: FieldType,
+    pub length: usize,
+    pub decimal_count: u8,
+    pub work_area_id: u16,
+    pub example: u8,
 }
 
 #[derive(Error, Debug)]
@@ -174,6 +174,8 @@ pub enum DBaseErrorKind {
     UnknownFieldType(u8),
     #[error("invalid last updated date: {:04}-{:02}-{:02}", .0, .1, .2)]
     InvalidLastUpdated(u16, u8, u8),
+    #[error("a DBase table must have at least 1 record")]
+    NoRecords,
 
     #[error(transparent)]
     FloatConversionError(#[from] ParseFloatError),
@@ -326,37 +328,18 @@ struct DBaseTable {
 }
 
 pub struct TableWriter<S: TableWriterState> {
-    table: Box<DBaseTable>,
     state: S,
 }
 
-// TODO: clean this up to enforce state changes.
 impl<W> TableWriter<Header<W>>
     where W: io::Write
 {
     pub fn new(writer: W) -> DBaseResult<Self> {
-        let table = DBaseTable {
-            last_updated: chrono::Utc::now().naive_utc().date(),
-            flags: 0b0000_0011, // magic found in my tables
-            fields: vec![],
-            n_records: 0,
-        };
-
         Ok(TableWriter {
-            table: Box::new(table),
             state: Header {
                 inner: writer,
             },
         })
-    }
-
-    // TODO: change this to either have types self-describe,
-    //   or just use the first record to determine the Fields.
-    /// Add the collection of fields this table will write.
-    pub fn add_fields<R>(&mut self, tr: &TableReader<Header<R>>) {
-        for f in &tr.table.fields {
-            self.table.fields.push(f.clone());
-        }
     }
 
     /// Write records.
@@ -366,27 +349,34 @@ impl<W> TableWriter<Header<W>>
     pub fn write_records<I>(self, records: &[I]) -> DBaseResult<()>
         where I: DBaseRecord
     {
+        let n_records = records.len() as u32;
+        if n_records == 0 {
+            return Err(DBaseErrorKind::NoRecords);
+        }
+        let field_descriptors = records[0].describe();
+        
+        let record_size = 1 + field_descriptors.iter().fold(0, |s, f| s + f.length) as u16;
+        log::info!("Record size: {record_size}");
+
         let mut data: [u8; 32] = [0; 32];
         let mut view = dbase_header::View::new(&mut data);
-        let table = self.table;
         let mut writer = self.state.inner;
-
-        let n_records = records.len() as u32;
-        let record_size = 1 + table.fields.iter().fold(0, |s, f| s + f.length) as u16;
-        log::info!("Record size: {record_size}");
 
         // header
         {
-            view.flags_mut().write(table.flags);
+            let today = chrono::Utc::now().naive_utc().date();
+            let flags = 0b0000_0011; // magic found in my tables
+            
+            view.flags_mut().write(flags);
             {
                 let mut last_updated = view.last_updated_mut();
-                last_updated.year_mut().write((table.last_updated.year() - 2000) as u8);
-                last_updated.month_mut().write(table.last_updated.month() as u8);
-                last_updated.day_mut().write(table.last_updated.day() as u8);
+                last_updated.year_mut().write((today.year() - 2000) as u8);
+                last_updated.month_mut().write(today.month() as u8);
+                last_updated.day_mut().write(today.day() as u8);
             }
             view.n_records_mut().write(n_records);
             view.n_header_bytes_mut().write(
-                (table.fields.len() * 32 + 33) as u16
+                (field_descriptors.len() * 32 + 33) as u16
             );
             view.n_record_bytes_mut().write(record_size);
             writer.write_all(&data)?;
@@ -394,7 +384,7 @@ impl<W> TableWriter<Header<W>>
 
         // field descriptors
         {
-            for f in &table.fields {
+            for f in &field_descriptors {
                 data.fill(0);
                 f.to_bytes(&mut data)?;
                 writer.write_all(&data)?;
@@ -407,7 +397,7 @@ impl<W> TableWriter<Header<W>>
         // data
         for r in records {
             writer.write(&[0x20])?; // valid record
-            for (d, f) in zip(table.fields.iter(), r.to_record()) {
+            for (d, f) in zip(field_descriptors.iter(), r.to_record()) {
                 d.write_field(&f, &mut writer)?;
             }
         }
@@ -421,6 +411,7 @@ impl<W> TableWriter<Header<W>>
 
 pub trait DBaseRecord {
     fn to_record(&self) -> Vec<Field>;
+    fn describe(&self) -> Vec<FieldDescriptor>;
 }
 
 /// A TableReader can be used to read a DBase table.
@@ -447,12 +438,6 @@ pub struct Header<R> {
 impl<R> TableReaderState for Header<R> {}
 
 impl<R> TableWriterState for Header<R> {}
-
-pub struct Writing<W> {
-    inner: W,
-}
-
-impl<W: io::Write + io::Seek> TableWriterState for Writing<W> {}
 
 /// There are no extra methods while in the Records state.
 impl<R: io::Read> TableReaderState for Records<R> {}

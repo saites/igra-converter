@@ -4,7 +4,7 @@ mod robin;
 mod validation;
 mod api;
 
-use std::{env, io};
+use std::env;
 use std::error::Error;
 use std::fs::File;
 use std::io::{BufRead, BufReader, BufWriter};
@@ -38,9 +38,6 @@ use crate::robin::{
 use crate::validation::{
     EntryValidator, PersonRecord, Report, RodeoEvent,
 };
-use crate::xbase::{
-    Header, TableReader,
-};
 
 type MyResult<T> = Result<T, Box<dyn Error>>;
 
@@ -51,12 +48,14 @@ async fn main() -> MyResult<()> {
     let mut args = env::args().skip(1);
     let command = args.next().expect("first arg should be the command");
     let personnel_path = args.next().expect("second arg should be the dbf file");
-
     log::debug!("Personnel File: {personnel_path}");
-    let dbt = xbase::try_from_path(personnel_path)?;
 
     match command.as_str() {
+        "gen_db" => {
+            do_db_gen(personnel_path)?;
+        }
         "validate" => {
+            let dbt = xbase::try_from_path(personnel_path)?;
             let target_path = args.next().ok_or("third arg should be a path")?;
             let people = validation::read_personnel(dbt)?;
             log::info!("Number of people in personnel database: {}", people.len());
@@ -67,6 +66,7 @@ async fn main() -> MyResult<()> {
             println!("{j}");
         }
         "search" => {
+            let dbt = xbase::try_from_path(personnel_path)?;
             let person = args.next().ok_or("third arg should be a name")?;
             let legal_first = args.next().unwrap_or("".to_string());
             let legal_last = args.next().unwrap_or("".to_string());
@@ -91,11 +91,8 @@ async fn main() -> MyResult<()> {
                 println!("\t{p}")
             }
         }
-        "gen_db" => {
-            let target_path = args.next().ok_or("third arg should be a path")?;
-            do_db_gen(dbt, target_path)?;
-        }
         "gen_reg" => {
+            let dbt = xbase::try_from_path(personnel_path)?;
             let target_path = args.next().ok_or("third arg should be a path")?;
             let people = validation::read_personnel(dbt)?;
             let fake_regs = generate_fake_reg(&people, 10)?;
@@ -103,6 +100,7 @@ async fn main() -> MyResult<()> {
             write!(BufWriter::new(File::create(target_path)?), "{j}")?;
         }
         "serve" => {
+            let dbt = xbase::try_from_path(personnel_path)?;
             let people = validation::read_personnel(dbt)?;
             let port = args.next()
                 .and_then(|var| var.parse::<u16>().ok())
@@ -283,12 +281,11 @@ fn do_validate<'a>(
 }
 
 /// Generate a database of random people, using the given table as a template for fields.
-fn do_db_gen<P, R>(dbt: TableReader<Header<R>>, target_path: P) -> MyResult<()>
+fn do_db_gen<P>(target_path: P) -> MyResult<()>
     where P: AsRef<std::path::Path>,
-          R: io::Read
 {
-    let mut tw = xbase::TableWriter::new(BufWriter::new(File::create(target_path)?))?;
-    tw.add_fields(&dbt);
+    let tw = xbase::TableWriter::new(
+            BufWriter::new(File::create(target_path)?))?;
     let people = generate_fake_db()?;
     Ok(tw.write_records(&people)?)
 }
@@ -481,6 +478,7 @@ fn generate_fake_reg(people: &Vec<PersonRecord>, n: usize) -> MyResult<Vec<Regis
 
 
 fn generate_fake_db() -> Result<Vec<PersonRecord>, Box<dyn Error>> {
+    // TODO: ensure these don't exceed field widths
     let first_names: Vec<_> = BufReader::new(
         File::open("./data/common_first_names.txt")?
     ).lines().filter_map(|r| r.ok()).collect();
@@ -583,7 +581,6 @@ fn generate_fake_db() -> Result<Vec<PersonRecord>, Box<dyn Error>> {
 
         res.push(pr);
     }
-
 
     Ok(res)
 }
