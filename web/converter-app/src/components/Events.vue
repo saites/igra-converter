@@ -99,7 +99,7 @@ const info = computed(() => {
   // constructing an object of the above values.
   const info = events.reduce((acc, e) => {
     const r = acc[e.rodeoEventRelId] ?? {
-      "rounds": [false, false], 
+      "rounds": {1: false, 2: false}, 
       "partners": dbPartners[e.rodeoEventRelId] ?? {},
       "regPartners": {},
       "problems": problems[e.rodeoEventRelId] ?? {},
@@ -122,7 +122,7 @@ const info = computed(() => {
       "name": o.name, 
       // info["some event"].rounds[i] is True 
       // iff this person is registered for that event and go-round.
-      "rounds": info[o.id]?.rounds ?? [false, false],
+      "rounds": info[o.id]?.rounds ?? {1: false, 2: false},
       // regPartners[round][i] is the i-th partner they listed when registering.
       "regPartners": info[o.id]?.regPartners ?? {}, 
       // partners[round][i] is the IGRA number
@@ -168,7 +168,27 @@ const showEvents = ref(false);
           <div class="item text-center">{{e.rounds[1] ? "X" : ""}}</div>
           <div class="item text-center">{{e.rounds[2] ? "X" : ""}}</div>
 
-          <template v-if="!e.o.solo">
+          <template v-if="e.o.solo">
+            <template v-for="(_, round_i) in e.rounds">
+                <div v-if="e.invalidRounds[round_i]" class="err place-self-start mx-4 col-span-3 w-full">
+                  <pinger color="bg-red-800">
+                    <span class="mx-4 ps-4">This event wasn't expected to have go-round {{round_i}}.
+                      This is likely a developer bug :-/
+                    </span>
+                  </pinger>
+                </div>
+                
+                <div v-if="e.tooMany[round_i]" class="err ms-4 my-2 col-span-3 w-full">
+                  <pinger color="bg-red-800">
+                    <span class="ps-4">There are too many partners listed for this go-round.
+                      This is likely a developer bug :-/
+                    </span>
+                  </pinger>
+                </div>
+            </template>
+          </template>
+
+          <template v-else>
             <template v-for="(reg_part, round_i) in e.regPartners">
               <div class="place-self-start px-4 pb-2 col-span-3 w-full">
 
