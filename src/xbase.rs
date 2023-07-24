@@ -327,6 +327,7 @@ struct DBaseTable {
     n_records: usize,
 }
 
+
 pub struct TableWriter<S: TableWriterState> {
     state: S,
 }
@@ -505,6 +506,13 @@ impl<R> TableReader<Header<R>>
                 inner: reader,
             },
         })
+    }
+
+    /// Show fields from this table.
+    pub fn print_fields(&self) {
+        for f in &self.table.fields {
+            println!("{f:?}")
+        }
     }
 
     /// Begin reading records from the TableReader.

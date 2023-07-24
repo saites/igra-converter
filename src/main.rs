@@ -65,6 +65,10 @@ async fn main() -> MyResult<()> {
             let j = serde_json::to_string_pretty(&report)?;
             println!("{j}");
         }
+        "show" => {
+            let dbt = xbase::try_from_path(personnel_path)?;
+            dbt.print_fields();
+        }
         "search" => {
             let dbt = xbase::try_from_path(personnel_path)?;
             let person = args.next().ok_or("third arg should be a name")?;
