@@ -27,7 +27,7 @@ use axum_extra::extract::WithRejection;
 
 use log;
 use rand::prelude::*;
-use serde::Deserialize;
+use serde::{Serialize, Deserialize};
 use tower_http::services::ServeDir;
 use serde_json::json;
 
@@ -117,6 +117,7 @@ async fn main() -> MyResult<()> {
     Ok(())
 }
 
+
 #[derive(Clone)]
 pub(crate) struct AppState {
     pub people: Arc<Vec<PersonRecord>>,
@@ -169,6 +170,7 @@ async fn do_serve(people: Vec<PersonRecord>, port: u16) -> MyResult<()> {
         .nest_service("/", ServeDir::new("./web"))
         .route("/validate", post(handle_validate))
         .route("/generate", post(handle_generate))
+        .route("/search", post(handle_search))
         .with_state(state)
         .fallback(handle_404);
 
@@ -258,8 +260,8 @@ struct GenerationOptions {
 /// Generates random registration data and returns the result as a JSON object.
 async fn handle_generate(
     State(state): State<AppState>,
-    Json(payload): Json<GenerationOptions>,
-) -> Result<(StatusCode, Json<Vec<Registration>>), ApiError>
+    WithRejection(Json(payload), _): WithRejection<Json<GenerationOptions>, ApiError>,
+) -> impl IntoResponse 
 {
     if !matches!(payload.num_people, 2..=200) {
         return Err(ApiError::InvalidNumberOfPeople { amount: payload.num_people, min: 2, max: 100 });
@@ -271,6 +273,48 @@ async fn handle_generate(
             log::error!("{:?}", err);
             ApiError::Unexpected
         })
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct SearchData {
+    performance_name: String, 
+    legal_first: Option<String>, 
+    legal_last: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct SearchResults<'a> {
+    is_perfect: bool,
+    best_matches: Vec<&'a PersonRecord>,
+}
+
+/// Search for a person in the database. 
+async fn handle_search<'a>(
+    State(state): State<AppState>,
+    Json(payload): Json<SearchData>,
+) -> impl IntoResponse 
+{
+    let people = state.people.clone();
+    let validator = EntryValidator::new(&people);
+    let (igra, name) = validation::split_partner(&payload.performance_name);
+    let (is_perfect, mut best_matches) = validator.find_person(
+        igra, 
+        &payload.legal_first.unwrap_or("".to_string()),
+        &payload.legal_last.unwrap_or("".to_string()), 
+        &name
+    );
+
+    best_matches.truncate(25);
+    let result = SearchResults{ is_perfect, best_matches };
+
+    let j = serde_json::to_string(&result)
+        .map_err(|e| json!({"err": e.to_string()}).to_string());
+
+    (
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, "application/json")],
+        j
+    )
 }
 
 /// Validates a collection of registrations against a collection of PersonRecords.

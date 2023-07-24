@@ -2,7 +2,7 @@
 .PHONY: up down prod \
 	clean-volumes clean-web \
 	vite node_modules npm-update \
-	serve-local
+	serve-local serve-local-release
 
 UID := $(shell id -u)
 GID := $(shell id -g)
@@ -11,12 +11,13 @@ COMPOSE_ARGS ?=
 COMPOSE = SERVICE_UID=$(UID) SERVICE_GID=$(GID) docker compose $(COMPOSE_ARGS) $(addprefix -f ,$(COMPOSE_FILES))
 BUILD_DIRS = dtarget/debug dtarget/release
 
-CARGO_RUN_ARGS ?= --release
+CARGO_RUN_ARGS ?= 
+serve-local-release: CARGO_RUN_ARGS += --release
 
 RANDOM_DBF ?= ./data/RANDOM.DBF
 $(RANDOM_DBF):
 	cargo run $(CARGO_RUN_ARGS) gen_db ../shared/PERSONEL.DBF $@
-serve-local: $(RANDOM_DBF) 
+serve-local-release serve-local: $(RANDOM_DBF) 
 	cargo run $(CARGO_RUN_ARGS) serve $(RANDOM_DBF) 8080
 
 build:
