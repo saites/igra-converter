@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { createApp, ref, computed } from 'vue'
+import { ref, watch } from 'vue'
+import { debounce } from 'lodash'
 
 const BASE_URL = "."
 
@@ -10,6 +11,10 @@ const searching = ref(false)
 
 async function search() {
   if (!name?.value) { return }
+  if (name.value.trim() === "") { 
+    searchResult.value = null; 
+    return 
+  }
 
   errMessage.value = null; 
   searching.value = true;
@@ -39,6 +44,9 @@ async function search() {
   searching.value = false;
 }
 
+
+watch(name, search)
+
 </script>
 
 <template>
@@ -55,11 +63,33 @@ async function search() {
         {{errMessage}}
     </div>
 
-    <div v-else>
+    <div v-if="name && searchResult">
       <span>Searching for "{{name}}"</span>
-      <div>
-        {{searchResult}}
+
+      <div class="grid grid-cols-7" v-for="p in searchResult.best_matches">
+        <span class="col-span-3">{{p.igra_number}} {{p.legal_first}} {{p.legal_last}}<template 
+          v-if="p.first_name !== p.legal_first || p.last_name !== p.legal_last"> aka 
+          {{p.first_name}} {{p.last_name}}</template>
+        </span>
+        <span>{{p.sex}}</span>
+        <span>{{p.birthdate}}</span>
+        <span>{{p.association}}</span>
+
+        <div :hidden="true">
+          <div>{{p.division}}</div>
+          <div>{{p.status}}</div>
+          <div>{{p.ssn}}</div>
+          <div>{{p.cell_phone}}</div>
+          <div>{{p.home_phone}}</div>
+        <span>{{p.address}} {{p.city}}, {{p.state}} {{p.zip}}</span>
+        <span>{{p.email}}</span>
+        </div>
       </div>
+
+      <div>
+        <span>Perfect? {{searchResult.is_perfect}}</span>
+      </div>
+
     </div>
 
   </section>
