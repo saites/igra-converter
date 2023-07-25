@@ -373,9 +373,9 @@ impl<'a> EntryValidator<'a> {
                 (true, false) => {
                     // Only have a combined name: try to match either field.
                     (p_first.eq_ignore_ascii_case(&found.legal_first)
-                        && p_last.eq_ignore_ascii_case(&found.legal_last)) ||
-                        (p_first.eq_ignore_ascii_case(&found.first_name)
-                            && p_last.eq_ignore_ascii_case(&found.last_name))
+                        && p_last.eq_ignore_ascii_case(&found.legal_last)) 
+                    || (p_first.eq_ignore_ascii_case(&found.first_name)
+                        && p_last.eq_ignore_ascii_case(&found.last_name))
                 }
                 (false, false) => {
                     // Have both, so require both field sets to match.
@@ -432,7 +432,12 @@ impl<'a> EntryValidator<'a> {
 
         if !performance.is_empty() {
             let p_first = p_first.to_ascii_uppercase();
-            let p_last = p_last.to_ascii_uppercase();
+            let p_last = if !p_last.is_empty() {
+                p_last.to_ascii_uppercase()
+            } else {
+                p_first.clone()
+            };
+
             self.by_perf_first
                 .find_by(search_dist, |x| self.damlev.distance(&p_first, &x.0.first_name))
                 .into_iter().for_each(|(d, r)| p_finder.insert(d, r.0));
