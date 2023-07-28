@@ -14,8 +14,8 @@ BUILD_DIRS = dtarget/debug dtarget/release
 CARGO_RUN_ARGS ?= 
 serve-local-release: CARGO_RUN_ARGS += --release
 
-# RANDOM_DBF ?= ./data/RANDOM.DBF
-RANDOM_DBF ?= ./data/tmp/PERSONEL.DBF
+RANDOM_DBF ?= ./data/RANDOM.DBF
+# RANDOM_DBF ?= ./data/tmp/PERSONEL.DBF
 $(RANDOM_DBF):
 	cargo run $(CARGO_RUN_ARGS) gen_db ../shared/PERSONEL.DBF $@
 serve-local-release serve-local: $(RANDOM_DBF) 

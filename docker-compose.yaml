@@ -19,7 +19,6 @@ services:
       - "./Cargo.toml:/usr/src/project/Cargo.toml"
       - "./Cargo.lock:/usr/src/project/Cargo.lock"
       - "./data:/usr/src/project/data"
-    init: true
     working_dir: '/usr/src/project'
     user: "${SERVICE_UID:-1000}:${SERVICE_GID:-100}"
     command: cargo run serve ./data/random-data.dbf 443
