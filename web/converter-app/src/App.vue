@@ -24,20 +24,24 @@ const currentView = computed(() => {
 <template>
 
 <div>
-  <nav class="flex w-full justify-evenly">
-      <a href="#/">Registration</a> |
-      <a href="#/search">Search</a>
+  <nav class="flex w-full justify-evenly border-indigo-500 border-solid border-b-2 mb-2">
+      <a href="#/" :class="{'current': currentPath === '#/'}">Registration</a>
+      <a href="#/search" :class="{'current': currentPath === '#/search'}">Search</a>
   </nav>
-  <component :is="currentView" />
+  <KeepAlive>
+    <component :is="currentView" />
+  </KeepAlive>
 </div>
 
 </template>
 
 <style>
-button {
-  @apply rounded bg-indigo-500 hover:bg-indigo-600 text-white p-2 w-24 h-16;
-  @apply disabled:bg-gray-500;
-  @apply disabled:cursor-progress;
+a {
+  @apply rounded-t bg-indigo-500 hover:bg-indigo-600 text-white text-center p-2 w-36;
+}
+
+a.current {
+  @apply bg-indigo-800 pointer-events-none;
 }
 
 </style>

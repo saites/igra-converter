@@ -133,38 +133,38 @@ const dbContestantCat = computed(() => {
       <template #summary>
         <div class="px-4 sm:px-6 sm:py-1"
           :class="{'bg-slate-100': issues.length === 0, 'bg-red-200': issues.length > 0}">
-        <header class="text-lg">
-          <div class="flex flex-row">
-          <span class="basis-1/4 md:basis-1/12">{{found?.igra_number ?? "XXXX"}}</span>
-          <span class="basis-1/4 md:basis-5/12">
-            {{fullName(contestant.firstName, contestant.lastName)}}
-          </span>
-          <span class="basis-1/4 md:basis-2/12 mx-8">{{events.length}} Go-Rounds</span>
-          <span class="basis-1/4 md:basis-4/12">({{issues.length}} 
-            issue{{issues.length !== 1 ? 's' : ''}}
-            with this registration)
-          </span>
+            <header class="text-lg">
+              <div class="flex flex-row">
+                <span class="basis-1/4 md:basis-1/12">{{found?.igra_number ?? "XXXX"}}</span>
+                <span class="basis-1/4 md:basis-5/12">
+                  {{fullName(contestant.firstName, contestant.lastName)}}
+                </span>
+                <span class="basis-1/4 md:basis-2/12 mx-8">{{events.length}} Go-Rounds</span>
+                <span class="basis-1/4 md:basis-4/12">({{issues.length}} 
+                  issue{{issues.length !== 1 ? 's' : ''}}
+                  with this registration)
+                </span>
+              </div>
+            </header>
+
+          <div v-if="notAMember" class="col-span-3 mx-4 my-1 bg-yellow-300">
+            <pinger color="bg-yellow-700">
+              <span class="ps-4">This person says they're not a member, and no record closely matches their information.</span>
+            </pinger>
           </div>
-        </header>
 
-            <div v-if="notAMember" class="col-span-3 mx-4 my-1 bg-yellow-300">
-              <pinger color="bg-yellow-700">
-                <span class="ps-4">This person says they're not a member, and no record closely matches their information.</span>
-              </pinger>
-            </div>
+          <div v-if="maybeAMember" class="col-span-3 mx-4 my-1 bg-yellow-300">
+            <pinger color="bg-yellow-700">
+              <span class="ps-4">This person says they're not a member, 
+                but we found a database record that closely matches their information.</span>
+            </pinger>
+          </div>
 
-            <div v-if="maybeAMember" class="col-span-3 mx-4 my-1 bg-yellow-300">
-              <pinger color="bg-yellow-700">
-                <span class="ps-4">This person says they're not a member, 
-                  but we found a database record that closely matches their information.</span>
-              </pinger>
-            </div>
-
-            <div v-if="notOldEnough" class="col-span-3 mx-4 err">
-              <pinger>
-                <span class="ps-4">This person is not old enough to rodeo in our association.</span>
-              </pinger>
-            </div>
+          <div v-if="notOldEnough" class="col-span-3 mx-4 err">
+            <pinger>
+              <span class="ps-4">This person is not old enough to rodeo in our association.</span>
+            </pinger>
+          </div>
 
         </div>
       </template>

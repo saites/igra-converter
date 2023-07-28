@@ -9,7 +9,8 @@ const searchResult = ref(null)
 const errMessage = ref(null)
 const searching = ref(false)
 
-async function search() {
+async function search(newVal, oldVal) {
+  if (newVal.trim() === oldVal.trim()) { return }
   if (!name?.value) { return }
   if (name.value.trim() === "") { 
     searchResult.value = null; 
@@ -57,14 +58,12 @@ watch(name, search)
         <input id="performance-name" v-model="name">
     </div>
 
-        <button @click="search">Find</button>
-
     <div v-if="errMessage !== null">
         {{errMessage}}
     </div>
 
     <div v-if="name && searchResult">
-      <span>Searching for "{{name}}"</span>
+      <span class="font-bold">Searching for "{{name.trim()}}"</span>
 
       <div class="grid grid-cols-7" v-for="p in searchResult.best_matches">
         <span class="col-span-3">{{p.igra_number}} {{p.legal_first}} {{p.legal_last}}<template 
@@ -84,10 +83,6 @@ watch(name, search)
         <span>{{p.address}} {{p.city}}, {{p.state}} {{p.zip}}</span>
         <span>{{p.email}}</span>
         </div>
-      </div>
-
-      <div>
-        <span>Perfect? {{searchResult.is_perfect}}</span>
       </div>
 
     </div>

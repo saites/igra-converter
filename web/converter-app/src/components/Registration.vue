@@ -83,7 +83,7 @@ async function generate() {
       
     </div>
       <div class="flex justify-evenly">
-        <label for="nEntries"># Entries: {{nEntries}}</label>
+        <label for="nEntries" class="self-center"># Entries: {{nEntries}}</label>
         <input id="nEntries" type="range" v-model.number="nEntries" min="2" max="200">
 
         <button :disabled="generating || validating" @click="generate">
@@ -122,7 +122,7 @@ async function generate() {
 
 <style>
 button {
-  @apply rounded bg-indigo-500 hover:bg-indigo-600 text-white p-2 w-24 h-16;
+  @apply rounded bg-indigo-500 hover:bg-indigo-600 text-white p-2 w-24 h-12;
   @apply disabled:bg-gray-500;
   @apply disabled:cursor-progress;
 }
