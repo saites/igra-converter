@@ -17,6 +17,7 @@ use crate::robin::EventID::Known;
 use crate::robin::{Event, EventID, Registration};
 use crate::xbase::{DBaseRecord, DBaseResult, Decimal, Field, Header, TableReader, FieldDescriptor, FieldType};
 
+/// Read registration data from the JSON file at the given path.
 pub fn read_reg<P: AsRef<std::path::Path>>(path: P) -> Result<Vec<Registration>, Box<dyn Error>> {
     Ok(serde_json::from_reader(BufReader::new(File::open(path)?))?)
 }
@@ -161,7 +162,12 @@ pub struct Report<'a> {
     pub relevant: HashMap<&'a str, &'a PersonRecord>,
 }
 
-/// The interface asks for "PARTNER NAME | IGRA #",
+/// Checks if two strings are equal ignoring ascii case and leading/trailing whitespace.
+fn str_eq(s1: &str, s2: &str) -> bool {
+    s1.trim().eq_ignore_ascii_case(s2.trim())
+}
+
+/// The registration form asks for "PARTNER NAME | IGRA #",
 /// so this split a partner string s into (Some(igra_number), name)
 /// if the string starts or ends with digits, or (None, name) otherwise.
 ///
@@ -171,7 +177,7 @@ pub fn split_partner(s: &str) -> (Option<&str>, &str) {
     fn ignored(c: char) -> bool {
         c == '|' || c.is_whitespace()
     }
-    
+
     let s = s.trim_matches(ignored);
     if s.is_empty() {
         return (None, s);
@@ -192,6 +198,7 @@ pub fn split_partner(s: &str) -> (Option<&str>, &str) {
         _ => (None, s.trim_matches(ignored)),
     }
 }
+
 
 impl<'a> EntryValidator<'a> {
     pub(crate) fn new(people: &'a Vec<PersonRecord>) -> Self {
@@ -336,53 +343,69 @@ impl<'a> EntryValidator<'a> {
     /// The converse is not true in general: a single match may not be perfect.
     /// Note that the collection may be empty.
     ///
-    /// With an IGRA number, a perfect match must have a matching number,
-    /// and if any of the name fields are non-empty, further consideration is necessary.
-    /// With all empty names, a matching IGRA number is considered a perfect match.
-    /// Otherwise, potential matches must also satisfy the name requirements below.
+    /// Which inputs are non-empty determines how we decide the input matches a record.
+    ///
+    /// If we have an IGRA number, a perfect match must match that matching number,
+    /// and if all the name fields are empty, then we'll simply return that record.
     ///
     /// Without an IGRA number, a perfect match depends on what names are non-empty,
     /// what they match in the database, and whether we have multiple potential hits.
     ///
-    /// Which names are non-empty determines whether we can distinguish legal vs performance names.
-    /// If performance is non-empty, we attempt to split it at the first space and trim its parts;
-    /// if it can't be split, then it's taken as the first name with the last name empty.
+    /// If `performance` is non-empty, we try to extract a first and last name portion as follows:
+    /// - If it has a comma `,` we split it there assume we have something like "LastName, FirstName".
+    /// - Otherwise, if it has a space ` ` we split it there and assume its like "FirstName LastName".
+    /// - Otherwise, we just call it "FirstName".
+    /// Finally, we trim any leading whitespace or additional commas from each part,
+    /// and if this leaves the first part empty, their values are swapped.
+    /// Note that even if `performance` is be non-empty, these resulting parts might be (e.g. ",, ,").
+    ///
+    /// When `first` and `last` are both empty, they are ignored for matching purposes.
+    /// If either is non-empty, `first` must match `legal_first` and `last` must match `legal_last`.
+    ///
     /// When both are set, they each must match their respective fields.
     /// When only first and last are set, they must match the legal first/last names.
     /// If only performance is set, it must match _either_ legal or performance names.
+    /// If we're only given two-part performance name P (e.g. likely a partner field),
+    /// and we're matching against a record R that has an empty last_name or first_name,
+    /// we'll accept `P == "R.first_name R.legal_last"` or `P == R.legal_first R.last_name`.
     pub fn find_person<'b>(&'b self, igra_num: Option<&str>, first: &str, last: &str, performance: &str)
-                   -> (bool, Vec<&'a PersonRecord>) {
-        let first = first.trim();
-        let last = last.trim();
-        let (p_first, p_last) = performance.split_once(' ')
-            .map(|(f, l)| (f.trim(), l.trim()))
-            .unwrap_or((performance.trim(), &""));
+                           -> (bool, Vec<&'a PersonRecord>) {
+        let ignore_chars: &[_] = &[' ', ','];
 
-        let is_perfect = |found: &PersonRecord| {
-            match (first.is_empty() && last.is_empty(), performance.is_empty()) {
-                (true, true) => {
-                    // If we don't have any names, only match against IGRA number.
-                    // If we don't even have that, then what are you searching for?
-                    igra_num.is_some_and(|s| s.trim() == found.igra_number)
-                },
+        let first = first.trim_matches(ignore_chars);
+        let last = last.trim_matches(ignore_chars);
+        let (p_first, p_last) = performance.split_once(',')
+            .map(|(l, f)| { (f, l) })
+            .or_else(|| performance.split_once(' '))
+            .map(|(f, l)| { (f.trim_matches(ignore_chars), l.trim_matches(ignore_chars)) })
+            .map(|(f, l)| { if f.is_empty() { (l, f) } else { (f, l) } })
+            .unwrap_or((performance.trim_matches(ignore_chars), ""));
+
+        let have_legal_input = !(first.is_empty() && last.is_empty());
+        let have_perf_input = !(p_first.is_empty() && p_last.is_empty());
+        let two_part_perf = !p_first.is_empty() && !p_last.is_empty();
+
+        // This function intentionally excludes things that are reasonable, but not specific enough.
+        // In fact, it's likely a bit too broad, but that's the sort of thing we can edit in post :)
+        let is_perfect = |rec: &PersonRecord| {
+            let l_lf_match = str_eq(&rec.legal_first, first);
+            let l_ll_match = str_eq(&rec.legal_last, last);
+            let p_pf_match = str_eq(&rec.first_name, p_first);
+            let p_pl_match = str_eq(&rec.last_name, p_last);
+            let p_lf_match = str_eq(&rec.legal_first, p_first);
+            let p_ll_match = str_eq(&rec.legal_last, p_last);
+
+            // When we don't need to match the performance name, things are easier.
+            match (have_legal_input, have_perf_input) {
+                (false, false) => { igra_num.is_some_and(|s| str_eq(s, &rec.igra_number)) }
+                (true, false) => { l_lf_match && l_ll_match }
+                (true, true) => { l_lf_match && l_ll_match && p_pf_match && p_pl_match }
                 (false, true) => {
-                    // Only have a separated first and last name: try to match legal.
-                    first.eq_ignore_ascii_case(&found.legal_first)
-                        && last.eq_ignore_ascii_case(&found.legal_last)
-                }
-                (true, false) => {
-                    // Only have a combined name: try to match either field.
-                    (p_first.eq_ignore_ascii_case(&found.legal_first)
-                        && p_last.eq_ignore_ascii_case(&found.legal_last)) 
-                    || (p_first.eq_ignore_ascii_case(&found.first_name)
-                        && p_last.eq_ignore_ascii_case(&found.last_name))
-                }
-                (false, false) => {
-                    // Have both, so require both field sets to match.
-                    first.eq_ignore_ascii_case(&found.legal_first)
-                        && last.eq_ignore_ascii_case(&found.legal_last)
-                        && p_first.eq_ignore_ascii_case(&found.first_name)
-                        && p_last.eq_ignore_ascii_case(&found.last_name)
+                    (p_pf_match && p_pl_match) || (p_lf_match && p_ll_match) ||
+                        (two_part_perf &&
+                            (rec.last_name.is_empty() && p_pf_match && p_ll_match) || // "FirstName LegalLast"
+                            (rec.first_name.is_empty() && p_lf_match && p_pl_match)   // "LegalFirst LastName"
+                        )
                 }
             }
         };
@@ -531,7 +554,9 @@ impl<'a> EntryValidator<'a> {
             if possible.is_empty() {
                 proc.issues.push(Suggestion {
                     problem: Problem::UnknownPartner {
-                        event: db_event, round: event.round, index: i,
+                        event: db_event,
+                        round: event.round,
+                        index: i,
                     },
                     fix: Fix::ContactRegistrant,
                 })
@@ -539,10 +564,12 @@ impl<'a> EntryValidator<'a> {
 
             proc.push_all(
                 Problem::UnknownPartner {
-                    event: db_event, round: event.round, index: i,
+                    event: db_event,
+                    round: event.round,
+                    index: i,
                 },
                 possible.into_iter().take(30),
-                relevant
+                relevant,
             );
         }
     }
@@ -562,21 +589,21 @@ impl<'a> EntryValidator<'a> {
 
         if is_member && igra_num.is_empty() {
             proc.issues.push(Suggestion {
-                problem: Problem::NoValue { field: RegF::IGRANumber, },
+                problem: Problem::NoValue { field: RegF::IGRANumber },
                 fix: Fix::ContactRegistrant,
             })
         }
 
         if first_name.is_empty() {
             proc.issues.push(Suggestion {
-                problem: Problem::NoValue { field: RegF::LegalFirst, },
+                problem: Problem::NoValue { field: RegF::LegalFirst },
                 fix: Fix::ContactRegistrant,
             })
         }
 
         if last_name.is_empty() {
             proc.issues.push(Suggestion {
-                problem: Problem::NoValue { field: RegF::LegalLast, },
+                problem: Problem::NoValue { field: RegF::LegalLast },
                 fix: Fix::ContactRegistrant,
             })
         }
@@ -612,8 +639,8 @@ impl<'a> EntryValidator<'a> {
         // but this only matters if they don't list an IGRA identifier.
         // If we have their IGRA number, this just gives us certainty it's not a typo.
         let exact = |member: &PersonRecord| {
-            member.legal_first.eq_ignore_ascii_case(&first_name)
-                && member.legal_last.eq_ignore_ascii_case(&last_name)
+            str_eq(&member.legal_first, &first_name)
+                && str_eq(&member.legal_last, &last_name)
                 && member.birthdate == dob
                 && member.ssn == ssn
         };
@@ -625,7 +652,8 @@ impl<'a> EntryValidator<'a> {
             if candidates.is_empty() {
                 // They say they're not a member, and they're probably right.
                 proc.issues.push(Suggestion {
-                    problem: Problem::NotAMember, fix: Fix::AddNewMember
+                    problem: Problem::NotAMember,
+                    fix: Fix::AddNewMember,
                 });
                 return;
             } else {
@@ -672,7 +700,7 @@ impl<'a> EntryValidator<'a> {
 
                 proc.issues.push(Suggestion {
                     problem: Problem::NoPerfectMatch,
-                    fix: Fix::UseThisRecord(IGRANumber(m.igra_number.clone()))
+                    fix: Fix::UseThisRecord(IGRANumber(m.igra_number.clone())),
                 });
             }
         }
@@ -680,61 +708,89 @@ impl<'a> EntryValidator<'a> {
         proc.found = Some(m.igra_number.as_str());
         relevant.insert(&m.igra_number, m);
 
-        // This macro checks if two strings are equal ignoring ascii case,
-        // and if not, adds an issue noting the database field should be updated
-        // (or that the registrant made a typo when they filled out the form).
-        macro_rules! check (
-                ($field:expr, $lval:expr, $rval:expr) => (
-                    if !$lval.trim().eq_ignore_ascii_case(&$rval.trim()) {
-                        proc.issues.push(Suggestion{
-                            problem: Problem::DbMismatch{field: $field},
-                            fix: Fix::UpdateDatabase,
-                        })
-                    }
-                );
-            );
-
-        // Compare phone numbers by stripping all non-digit characters.
-        macro_rules! check_phone (
-            ($field:expr, $lval:expr, $rval:expr) => (
-                let mut lphone = $lval.clone();
-                lphone.retain(|c| c.is_ascii_digit());
-                let mut rphone = $rval.clone();
-                rphone.retain(|c| c.is_ascii_digit());
-                check!($field, lphone, rphone);
-            );
-        );
-
-        check!(RegF::Email, m.email, who.address.email);
-        check!(RegF::Association, m.association, who.association.member_assn);
-        check!(RegF::DateOfBirth, m.birthdate, who.dob.dos());
-
-        if let Some((_, ssn)) = m.ssn.rsplit_once('-') {
-            check!(RegF::SSN, ssn, who.ssn)
+        /// Checks if two strings are equal ignoring ascii case,
+        /// and if not, adds an issue noting the database field should be updated
+        /// (or that the registrant made a typo when they filled out the form).
+        fn check(proc: &mut Processed, field: RegF, s1: &str, s2: &str) {
+            if !str_eq(s1, s2) {
+                proc.issues.push(Suggestion {
+                    problem: Problem::DbMismatch { field },
+                    fix: Fix::UpdateDatabase,
+                })
+            }
         }
 
-        // In the database, most people performance names match their legal names.
+        /// Compare phone numbers by stripping all non-digit characters.
+        fn check_phone(proc: &mut Processed, field: RegF, lphone: &str, rphone: &str) {
+            let mut lphone = lphone.to_string();
+            let mut rphone = rphone.to_string();
+            lphone.retain(|c| c.is_ascii_digit());
+            rphone.retain(|c| c.is_ascii_digit());
+
+            // If given, strip a likely country prefix.
+            let lphone = if lphone.len() == 11 && lphone.starts_with("1") { &lphone[1..] } else { &lphone };
+            let rphone = if rphone.len() == 11 && rphone.starts_with("1") { &rphone[1..] } else { &rphone };
+            check(proc, field, lphone, rphone);
+        }
+
+        check(proc, RegF::Email, &m.email, &who.address.email);
+        check(proc, RegF::DateOfBirth, &m.birthdate, &who.dob.dos());
+
+        if let Some(assn) = who.association.member_assn.split_whitespace().next() {
+            log::debug!("Association: {assn}");
+            check(proc, RegF::Association, &m.association, &assn);
+        } else {
+            log::debug!("Association: {}", who.association.member_assn);
+            check(proc, RegF::Association, &m.association, &who.association.member_assn);
+        }
+
+        if let Some((_, ssn)) = m.ssn.rsplit_once('-') {
+            check(proc, RegF::SSN, &ssn, &who.ssn)
+        } else {
+            check(proc, RegF::SSN, &m.ssn, &who.ssn)
+        }
+
+        check(proc, RegF::LegalFirst, &m.legal_first, &who.first_name);
+        check(proc, RegF::LegalLast, &m.legal_last, &who.last_name);
+
+        // In the database, most people's performance names match their legal names.
         // If the user left it blank, we probably should should ignore it.
         // Otherwise, we compare the given value against the concatenated "First Last" DB values.
         if !who.performance_name.trim().is_empty() {
             let db_perf_name = format!("{} {}", m.first_name, m.last_name);
-            check!(RegF::PerformanceName, db_perf_name, who.performance_name);
+            check(proc, RegF::PerformanceName, &db_perf_name, &who.performance_name);
         }
 
         // Address in the database use only a single line.
+        // This needs a bit of work to handle common abbreviations and such.
         let addr = format!("{} {}", who.address.address_line_1, who.address.address_line_2);
-        check!(RegF::AddressLine, m.address, addr);
-        check!(RegF::City, m.city, who.address.city);
-        check!(RegF::PostalCode, m.zip, who.address.zip_code);
+        check(proc, RegF::AddressLine, &m.address, &addr);
+        check(proc, RegF::City, &m.city, &who.address.city);
 
-        check_phone!(RegF::CellPhone, m.cell_phone, who.address.cell_phone_no);
-        check_phone!(RegF::HomePhone, m.home_phone, who.address.home_phone_no);
+        // Postal codes in the database often have a suffix, but users usually don't put them.
+        // If only one has a suffix, just compare their prefixes; otherwise compare them as usual.
+        match (m.zip.split_once('-'), who.address.zip_code.split_once('-')) {
+            (Some((m_prefix, _)), None) => { check(proc, RegF::PostalCode, m_prefix, &who.address.zip_code); }
+            (None, Some((r_prefix, _))) => { check(proc, RegF::PostalCode, &m.zip, r_prefix); }
+            _ => { check(proc, RegF::PostalCode, &m.zip, &who.address.zip_code); }
+        };
+
+        check_phone(proc, RegF::CellPhone, &m.cell_phone, &who.address.cell_phone_no);
+        // If they put the same number in twice, just ignore the second.
+        if !str_eq(&who.address.cell_phone_no, &who.address.home_phone_no) {
+            check_phone(proc, RegF::HomePhone, &m.home_phone, &who.address.home_phone_no);
+        }
 
         // The DB uses two letter abbreviations for states,
         // and it uses the field for Canadian provinces,
         // and calls everything else "FC" for "Foreign Country".
         let is_us_or_can =
-            who.address.country == "United States" || who.address.country == "Canada";
+            str_eq(&who.address.country, "United States")
+                || str_eq(&who.address.country, "US")
+                || str_eq(&who.address.country, "USA")
+                || str_eq(&who.address.country, "Canada")
+                || str_eq(&who.address.country, "CA")
+                || str_eq(&who.address.country, "CAN");
         if m.state == "FC" {
             if is_us_or_can {
                 proc.issues.push(Suggestion {
@@ -753,16 +809,19 @@ impl<'a> EntryValidator<'a> {
                     fix: Fix::UpdateDatabase,
                 });
             }
-            match m.region() {
-                Some(db_region) => {
-                    check!(RegF::Region, db_region, who.address.region)
-                }
-                _ => proc.issues.push(Suggestion {
+
+            // Most of the regions are 'normalized' to a full name,
+            // but sometimes we just have a two-letter state abbreviation.
+            let region_matches = m.region().map_or(false, |db_region| {
+                str_eq(db_region, &who.address.region)
+            });
+            if !(region_matches || str_eq(&m.state, &who.address.region)) {
+                proc.issues.push(Suggestion {
                     problem: Problem::DbMismatch {
                         field: RegF::Region,
                     },
                     fix: Fix::UpdateDatabase,
-                }),
+                });
             }
         }
 
@@ -778,7 +837,6 @@ impl<'a> EntryValidator<'a> {
             }),
         }
     }
-
 }
 
 /// This is the result of processing registration data.
@@ -834,11 +892,11 @@ impl<'a> Processed<'a> {
     /// In addition, insure those people are the relevancy collection.
     #[inline]
     fn push_all<I>(&mut self,
-                problem: Problem,
-                people: I,
-                relevant: &mut HashMap<&'a str, &'a PersonRecord>,
+                   problem: Problem,
+                   people: I,
+                   relevant: &mut HashMap<&'a str, &'a PersonRecord>,
     )
-    where I: IntoIterator<Item=&'a PersonRecord>
+        where I: IntoIterator<Item=&'a PersonRecord>
     {
         for p in people.into_iter() {
             self.push_person(problem.clone(), p, relevant);
@@ -1212,52 +1270,190 @@ pub fn read_personnel<R: io::Read>(
 impl DBaseRecord for PersonRecord {
     fn describe(&self) -> Vec<FieldDescriptor> {
         vec![
-            FieldDescriptor{ name: "IGRA_NUM".to_string(), field_type: FieldType::Character, 
-                length: 4, decimal_count: 10, work_area_id: 0, example: 8 },
-            FieldDescriptor{ name: "STATE_ASSN".to_string(),field_type: FieldType::Character, 
-                length: 6, decimal_count: 10, work_area_id: 0, example: 8 },
-            FieldDescriptor{ name: "BIRTH_DATE".to_string(),field_type: FieldType::Character, 
-                length: 8, decimal_count: 10, work_area_id: 0, example: 8 },
-            FieldDescriptor{ name: "SSN".to_string(), field_type: FieldType::Character, 
-                length: 11, decimal_count: 10, work_area_id: 0, example: 8 },
-            FieldDescriptor{ name: "DIVISION".to_string(),field_type: FieldType::Character, 
-                length: 1, decimal_count: 10, work_area_id: 0, example: 8 },
-            FieldDescriptor{ name: "LAST_NAME".to_string(), field_type: FieldType::Character, 
-                length: 20, decimal_count: 10, work_area_id: 0, example: 8 },
-            FieldDescriptor{ name: "FIRST_NAME".to_string(),field_type: FieldType::Character, 
-                length: 17, decimal_count: 10, work_area_id: 0, example: 8 },
-            FieldDescriptor{ name: "LEGAL_LAST".to_string(),field_type: FieldType::Character, 
-                length: 20, decimal_count: 10, work_area_id: 0, example: 8 },
-            FieldDescriptor{ name: "LEGALFIRST".to_string(),field_type: FieldType::Character, 
-                length: 17, decimal_count: 10, work_area_id: 0, example: 8 },
-            FieldDescriptor{ name: "ID_CHECKED".to_string(),field_type: FieldType::Character, 
-                length: 1, decimal_count: 10, work_area_id: 0, example: 8 },
-            FieldDescriptor{ name: "SEX".to_string(), field_type: FieldType::Character, 
-                length: 1, decimal_count: 10, work_area_id: 0, example: 8 },
-            FieldDescriptor{ name: "ADDRESS".to_string(), field_type: FieldType::Character, 
-                length: 30, decimal_count: 10, work_area_id: 0, example: 8 },
-            FieldDescriptor{ name: "CITY".to_string(), field_type: FieldType::Character, 
-                length: 30, decimal_count: 10, work_area_id: 0, example: 8 },
-            FieldDescriptor{ name: "STATE".to_string(), field_type: FieldType::Character, 
-                length: 2, decimal_count: 10, work_area_id: 0, example: 8 },
-            FieldDescriptor{ name: "ZIP".to_string(), field_type: FieldType::Character, 
-                length: 10, decimal_count: 10, work_area_id: 0, example: 8 },
-            FieldDescriptor{ name: "HOME_PHONE".to_string(),field_type: FieldType::Character, 
-                length: 10, decimal_count: 13, work_area_id: 0, example: 8 },
-            FieldDescriptor{ name: "CELL_PHONE".to_string(),field_type: FieldType::Character, 
-                length: 10, decimal_count: 13, work_area_id: 0, example: 8 },
-            FieldDescriptor{ name: "E_MAIL".to_string(), field_type: FieldType::Character, 
-                length: 30, decimal_count: 10, work_area_id: 0, example: 8 },
-            FieldDescriptor{ name: "STATUS".to_string(), field_type: FieldType::Character, 
-                length: 1, decimal_count: 10, work_area_id: 0, example: 8 },
-            FieldDescriptor{ name: "FIRSTRODEO".to_string(),field_type: FieldType::Character, 
-                length: 8, decimal_count: 10, work_area_id: 0, example: 8 },
-            FieldDescriptor{ name: "LASTUPDATE".to_string(),field_type: FieldType::Character, 
-                length: 8, decimal_count: 10, work_area_id: 0, example: 8 },
-            FieldDescriptor{ name: "SORT_DATE".to_string(), field_type: FieldType::Character, 
-                length: 8, decimal_count: 10, work_area_id: 0, example: 8 },
-            FieldDescriptor{ name: "EXT_DOLLAR".to_string(),field_type: FieldType::Numeric, 
-                length: 10, decimal_count: 10, work_area_id: 0, example: 8 },
+            FieldDescriptor {
+                name: "IGRA_NUM".to_string(),
+                field_type: FieldType::Character,
+                length: 4,
+                decimal_count: 0,
+                work_area_id: 0,
+                example: 1,
+            },
+            FieldDescriptor {
+                name: "STATE_ASSN".to_string(),
+                field_type: FieldType::Character,
+                length: 5,
+                decimal_count: 0,
+                work_area_id: 0,
+                example: 1,
+            },
+            FieldDescriptor {
+                name: "BIRTH_DATE".to_string(),
+                field_type: FieldType::Character,
+                length: 8,
+                decimal_count: 0,
+                work_area_id: 0,
+                example: 1,
+            },
+            FieldDescriptor {
+                name: "SSN".to_string(),
+                field_type: FieldType::Character,
+                length: 11,
+                decimal_count: 0,
+                work_area_id: 0,
+                example: 1,
+            },
+            FieldDescriptor {
+                name: "DIVISION".to_string(),
+                field_type: FieldType::Character,
+                length: 1,
+                decimal_count: 0,
+                work_area_id: 0,
+                example: 1,
+            },
+            FieldDescriptor {
+                name: "LAST_NAME".to_string(),
+                field_type: FieldType::Character,
+                length: 17,
+                decimal_count: 0,
+                work_area_id: 0,
+                example: 1,
+            },
+            FieldDescriptor {
+                name: "FIRST_NAME".to_string(),
+                field_type: FieldType::Character,
+                length: 10,
+                decimal_count: 0,
+                work_area_id: 0,
+                example: 1,
+            },
+            FieldDescriptor {
+                name: "LEGAL_LAST".to_string(),
+                field_type: FieldType::Character,
+                length: 17,
+                decimal_count: 0,
+                work_area_id: 0,
+                example: 1,
+            },
+            FieldDescriptor {
+                name: "LEGALFIRST".to_string(),
+                field_type: FieldType::Character,
+                length: 10,
+                decimal_count: 0,
+                work_area_id: 0,
+                example: 1,
+            },
+            FieldDescriptor {
+                name: "ID_CHECKED".to_string(),
+                field_type: FieldType::Character,
+                length: 1,
+                decimal_count: 0,
+                work_area_id: 0,
+                example: 1,
+            },
+            FieldDescriptor {
+                name: "SEX".to_string(),
+                field_type: FieldType::Character,
+                length: 1,
+                decimal_count: 0,
+                work_area_id: 0,
+                example: 1,
+            },
+            FieldDescriptor {
+                name: "ADDRESS".to_string(),
+                field_type: FieldType::Character,
+                length: 30,
+                decimal_count: 0,
+                work_area_id: 0,
+                example: 1,
+            },
+            FieldDescriptor {
+                name: "CITY".to_string(),
+                field_type: FieldType::Character,
+                length: 18,
+                decimal_count: 0,
+                work_area_id: 0,
+                example: 1,
+            },
+            FieldDescriptor {
+                name: "STATE".to_string(),
+                field_type: FieldType::Character,
+                length: 2,
+                decimal_count: 0,
+                work_area_id: 0,
+                example: 1,
+            },
+            FieldDescriptor {
+                name: "ZIP".to_string(),
+                field_type: FieldType::Character,
+                length: 10,
+                decimal_count: 0,
+                work_area_id: 0,
+                example: 1,
+            },
+            FieldDescriptor {
+                name: "HOME_PHONE".to_string(),
+                field_type: FieldType::Character,
+                length: 13,
+                decimal_count: 0,
+                work_area_id: 0,
+                example: 1,
+            },
+            FieldDescriptor {
+                name: "CELL_PHONE".to_string(),
+                field_type: FieldType::Character,
+                length: 13,
+                decimal_count: 0,
+                work_area_id: 0,
+                example: 1,
+            },
+            FieldDescriptor {
+                name: "E_MAIL".to_string(),
+                field_type: FieldType::Character,
+                length: 50,
+                decimal_count: 0,
+                work_area_id: 0,
+                example: 1,
+            },
+            FieldDescriptor {
+                name: "STATUS".to_string(),
+                field_type: FieldType::Character,
+                length: 1,
+                decimal_count: 0,
+                work_area_id: 0,
+                example: 1,
+            },
+            FieldDescriptor {
+                name: "FIRSTRODEO".to_string(),
+                field_type: FieldType::Character,
+                length: 8,
+                decimal_count: 0,
+                work_area_id: 0,
+                example: 1,
+            },
+            FieldDescriptor {
+                name: "LASTUPDATE".to_string(),
+                field_type: FieldType::Character,
+                length: 8,
+                decimal_count: 0,
+                work_area_id: 0,
+                example: 1,
+            },
+            FieldDescriptor {
+                name: "SORT_DATE".to_string(),
+                field_type: FieldType::Character,
+                length: 8,
+                decimal_count: 0,
+                work_area_id: 0,
+                example: 1,
+            },
+            FieldDescriptor {
+                name: "EXT_DOLLAR".to_string(),
+                field_type: FieldType::Numeric,
+                length: 7,
+                decimal_count: 2,
+                work_area_id: 0,
+                example: 1,
+            },
         ]
     }
 
@@ -1387,13 +1583,13 @@ impl Display for PersonRecord {
         write!(
             f,
             "{num:4} {gender:1} {bday:8} {legal:26} {perf:26} {assoc:5} {addr:40} ",
-            num=self.igra_number,
-            gender=self.sex,
-            bday=self.birthdate,
-            legal=format!("{} {}", self.legal_first, self.legal_last),
-            perf=format!("{} {}", self.first_name, self.last_name),
-            addr=format!("{} {}, {}", self.address, self.city, self.state),
-            assoc=self.association,
+            num = self.igra_number,
+            gender = self.sex,
+            bday = self.birthdate,
+            legal = format!("{} {}", self.legal_first, self.legal_last),
+            perf = format!("{} {}", self.first_name, self.last_name),
+            addr = format!("{} {}, {}", self.address, self.city, self.state),
+            assoc = self.association,
         )
     }
 }
@@ -1502,7 +1698,7 @@ static REGIONS: phf::Map<&'static str, &'static str> = phf_map! {
 
 impl PersonRecord {
     pub fn region(&self) -> Option<&&'static str> {
-        REGIONS.get(&self.state)
+        REGIONS.get(&self.state.to_ascii_uppercase())
     }
 }
 
