@@ -98,19 +98,19 @@ const info = computed(() => {
   // info gathers together the partner info for the event,
   // constructing an object of the above values.
   const info = events.reduce((acc, e) => {
-    const r = acc[e.rodeoEventRelId] ?? {
+    const r = acc[e.eventId] ?? {
       "rounds": {1: false, 2: false}, 
-      "partners": dbPartners[e.rodeoEventRelId] ?? {},
+      "partners": dbPartners[e.eventId] ?? {},
       "regPartners": {},
-      "problems": problems[e.rodeoEventRelId] ?? {},
-      "tooFew": tooFew[e.rodeoEventRelId] ?? {},
-      "tooMany": tooMany[e.rodeoEventRelId] ?? {},
-      "invalidRounds": invalidRounds[e.rodeoEventRelId] ?? {},
+      "problems": problems[e.eventId] ?? {},
+      "tooFew": tooFew[e.eventId] ?? {},
+      "tooMany": tooMany[e.eventId] ?? {},
+      "invalidRounds": invalidRounds[e.eventId] ?? {},
     }
 
     r.rounds[e.round] = true 
     r.regPartners[e.round] = e.partners
-    acc[e.rodeoEventRelId] = r 
+    acc[e.eventId] = r
     return acc
   }, {})
 

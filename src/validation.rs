@@ -1552,18 +1552,22 @@ impl RodeoEvent {
     }
 
     pub fn from_id(id: u64) -> Option<Self> {
-        // todo: put this info somewhere else
         let event = match id {
-            3 => RodeoEvent::BullRiding,
-            // 11 => RodeoEvent::TeamRopingHeader,
+            1 => RodeoEvent::BullRiding,
+            2 => RodeoEvent::RanchSaddleBroncRiding,
+            // There isn't a 3.
+            4 => RodeoEvent::SteerRiding,
+            5 => RodeoEvent::ChuteDogging,
+            6 => RodeoEvent::CalfRopingOnFoot,
+            7 => RodeoEvent::MountedBreakaway,
+            8 => RodeoEvent::BarrelRacing,
+            9 => RodeoEvent::PoleBending,
+            10 => RodeoEvent::FlagRacing,
+            11 => RodeoEvent::TeamRopingHeader, // I am not 100% about this and 12.
             12 => RodeoEvent::TeamRopingHeeler,
-            13 => RodeoEvent::BarrelRacing,
-            14 => RodeoEvent::PoleBending,
-            15 => RodeoEvent::FlagRacing,
-            16 => RodeoEvent::SteerDecorating,
-            17 => RodeoEvent::WildDragRace,
-            18 => RodeoEvent::GoatDressing,
-            // todo: determine missing IDs
+            13 => RodeoEvent::SteerDecorating,
+            14 => RodeoEvent::WildDragRace,
+            15 => RodeoEvent::GoatDressing,
             _ => {
                 return None;
             }

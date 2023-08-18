@@ -24,10 +24,27 @@ function fullName(first, last) {
   return `${first} ${last}`
 }
 
+const contestantName = computed(() => {
+  let { contestant } = props;
+  if (!contestant) { return; }
+
+  const legalName = `${fullName(contestant.firstName, contestant.lastName)}`;
+  return contestant.performanceName ? `${contestant.performanceName} (${legalName})` : legalName;
+})
+
 // format a registrant's birthday
 const contestantBday = computed(() => {
   let { contestant } = props;
   return `${contestant?.dob?.month ?? "-"}/${contestant?.dob?.day ?? "-"}/${contestant?.dob?.year ?? "-"}`
+})
+
+const databaseBday = computed(() => {
+  let { found } = props;
+  const bday = found?.birthdate;
+  const year = bday?.substring(0, 4) || "-";
+  const month = bday?.substring(4, 6) || "-";
+  const day = bday?.substring(6, 8) || "-";
+  return `${month}/${day}/${year}`
 })
 
 // is True iff there's an issue marked "NotOldEnough"
@@ -137,7 +154,7 @@ const dbContestantCat = computed(() => {
               <div class="flex flex-row">
                 <span class="basis-1/4 md:basis-1/12">{{found?.igra_number ?? "XXXX"}}</span>
                 <span class="basis-1/4 md:basis-5/12">
-                  {{fullName(contestant.firstName, contestant.lastName)}}
+                  {{contestantName}}
                 </span>
                 <span class="basis-1/4 md:basis-2/12 mx-8">{{events.length}} Go-Rounds</span>
                 <span class="basis-1/4 md:basis-4/12">({{issues.length}} 
@@ -163,6 +180,13 @@ const dbContestantCat = computed(() => {
           <div v-if="notOldEnough" class="col-span-3 mx-4 err">
             <pinger>
               <span class="ps-4">This person is not old enough to rodeo in our association.</span>
+            </pinger>
+          </div>
+
+          <div v-if="contestant?.noteToDirector" class="col-span-3 mx-4 my-1 bg-yellow-300">
+            <pinger color="bg-yellow-700">
+              <span class="ps-4">This person has left a note for the director.
+              </span>
             </pinger>
           </div>
 
@@ -233,7 +257,7 @@ const dbContestantCat = computed(() => {
               :value=contestantBday></data-cell>
             <data-cell 
               :class="{mismatch: mismatchedFields['DateOfBirth'], noval: unfilledFields['DateOfBirth']}"
-              :value=found?.birthdate></data-cell>
+              :value=databaseBday></data-cell>
 
             <span class="fieldHeader"
               :class="{mismatch: mismatchedFields['SSN'], noval: unfilledFields['SSN']}"

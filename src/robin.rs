@@ -6,9 +6,10 @@ use crate::validation::RodeoEvent;
 #[serde(rename_all(deserialize = "camelCase"))]
 #[serde(rename_all(serialize = "camelCase"))]
 pub struct Registration {
+    #[serde(alias = "rodeoContestantId")]
+    #[serde(rename(serialize = "rodeoContestantId"))]
     pub id: u64,
-    pub stalls: String,
-    // Should probably be an integer.
+    pub stalls: u64,
     pub contestant: Contestant,
     pub events: Vec<Event>,
     pub payment: Payment,
@@ -18,7 +19,8 @@ pub struct Registration {
 #[serde(rename_all(deserialize = "camelCase"))]
 #[serde(rename_all(serialize = "camelCase"))]
 pub struct Payment {
-    pub total: u64, // Should this be integral?
+    /// Total payment is in USD cents, e.g. $60 is represented as 6000.
+    pub total: u64,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -111,9 +113,8 @@ impl From<SomeEventID> for EventID {
 #[serde(rename_all(deserialize = "camelCase"))]
 #[serde(rename_all(serialize = "camelCase"))]
 pub struct Event {
-    #[serde(alias = "id")]
-    #[serde(alias = "rodeoEventRelId")]
-    #[serde(rename(serialize = "rodeoEventRelId"))]
+    #[serde(alias = "eventId")]
+    #[serde(rename(serialize = "eventId"))]
     pub id: EventID,
     pub partners: Vec<String>,
     pub round: u64,

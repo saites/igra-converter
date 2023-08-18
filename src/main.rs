@@ -404,24 +404,28 @@ fn generate_fake_reg(people: &Vec<PersonRecord>, n: usize) -> MyResult<Vec<Regis
             if twice {
                 r.events.push(robin::Event { id, partners: partners.clone(), round: 1 });
                 r.events.push(robin::Event { id, partners, round: 2 });
-                r.payment.total += 60;
+                r.payment.total += 6000;
             } else {
                 r.events.push(robin::Event { id, partners, round });
-                r.payment.total += 30;
+                r.payment.total += 3000;
             }
         }
     }
 
     fn format_phone(phone_num: &str) -> String {
-        format!("{}{}{}", &phone_num[1..4], &phone_num[5..8], &phone_num[9..13])
+        if phone_num.len() < 13 {
+            phone_num.to_string()
+        } else {
+            format!("{}{}{}", &phone_num[1..4], &phone_num[5..8], &phone_num[9..13])
+        }
     }
 
     // Start with single-person events and create registration entries.
     for p in &participants {
         let perf_name = format!("{} {}", p.first_name, p.last_name);
-        let dob_y = p.birthdate[0..4].parse::<u16>().unwrap_or(1970);
-        let dob_m = p.birthdate[4..6].parse::<u8>().unwrap_or(1);
-        let dob_d = p.birthdate[6..8].parse::<u8>().unwrap_or(1);
+        let dob_y = p.birthdate.get(0..4).and_then(|s| s.parse::<u16>().ok()).unwrap_or(1970);
+        let dob_m = p.birthdate.get(4..6).and_then(|s| s.parse::<u8>().ok()).unwrap_or(1);
+        let dob_d = p.birthdate.get(6..8).and_then(|s| s.parse::<u8>().ok()).unwrap_or(1);
         let dob = Date { year: dob_y, month: dob_m, day: dob_d };
 
         let n_events = rng.gen_range(0..=event_mod) + 2;
@@ -440,9 +444,10 @@ fn generate_fake_reg(people: &Vec<PersonRecord>, n: usize) -> MyResult<Vec<Regis
             ("Sonora".to_string(), "Mexico".to_string())
         };
 
+        let stalls = rng.gen_range(0..=3);
+
         let mut r = Registration {
             id: rng.gen(),
-            stalls: "".to_string(),
             contestant: Contestant {
                 first_name: p.legal_first.clone(),
                 last_name: p.legal_last.clone(),
@@ -451,7 +456,7 @@ fn generate_fake_reg(people: &Vec<PersonRecord>, n: usize) -> MyResult<Vec<Regis
                 dob,
                 gender: if p.sex == "M" { "Cowboys".to_string() } else { "Cowgirls".to_string() },
                 is_member: "yes".to_string(),
-                ssn: p.ssn[7..].to_string(),
+                ssn: p.ssn.get(7..11).map_or("".to_string(), |x| x.to_string()),
                 note_to_director: "".to_string(),
                 address: Address {
                     email: p.email.clone(),
@@ -470,7 +475,8 @@ fn generate_fake_reg(people: &Vec<PersonRecord>, n: usize) -> MyResult<Vec<Regis
                 },
             },
             events,
-            payment: Payment { total: 0 },
+            stalls,
+            payment: Payment { total: if stalls > 0 { (stalls - 1) * 2500 } else {0} },
         };
 
         for eid in event_names.choose_multiple(&mut rng, n_events) {
@@ -583,7 +589,7 @@ fn generate_fake_db() -> Result<Vec<PersonRecord>, Box<dyn Error>> {
     // Generate 8,000 records with IGRA numbers 1000 to 8999,
     // leaving 0000..=0999 and 9000..=9999 available.
     let mut res = Vec::with_capacity(8000);
-    for igra_number in 1000..10000 {
+    for igra_number in 1000..9000 {
         let last_name = last_names.choose(&mut rng).unwrap().clone();
         let first_name = first_names.choose(&mut rng).unwrap().clone();
         let association = associations.choose(&mut rng).unwrap().clone();

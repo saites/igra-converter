@@ -16,7 +16,7 @@ const theseIssues = computed(() => {
 
   return issues.filter((issue) => {
       return (
-        issue.problem.data && issue.problem.data.event === event.rodeoEventRelId
+        issue.problem.data && issue.problem.data.event === event.eventId
           && (
             !issue.problem.data.round
             || issue.problem.data.round === event.round
@@ -50,7 +50,7 @@ const partnerInfo = computed(() => {
   }
 
   let eventPartners = partners.filter((p) => {
-    return p.event === event.rodeoEventRelId && p.round === event.round
+    return p.event === event.eventId && p.round === event.round
   });
 
   // TODO: this logic is buggy and misassociated some people.
@@ -87,7 +87,7 @@ function formatPartner(p) {
 <template>
 
   <tr :class="bgColor" class="text-center">
-    <td>{{event.rodeoEventRelId}}</td>
+    <td>{{event.eventId}}</td>
     <td>{{event.round}}</td>
     <td>{{event.partners[0]}}</td>
     <td>{{event.partners[1]}}</td>
