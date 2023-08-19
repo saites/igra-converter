@@ -7,7 +7,7 @@ services:
       context: .
     restart: "no"
     environment:
-      RUST_LOG: "info,converter=debug,axum=debug"
+      RUST_LOG: "${RUST_LOG:-info,converter=debug,axum=debug}"
       RUST_LOG_STYLE: "always"
       CARGO_BUILD_DEP_INFO_BASEDIR: "."
     ports:
@@ -15,23 +15,22 @@ services:
       - "8443:443"
     volumes:
       - "./src:/usr/src/project/src"
-      - "./dtarget:/usr/src/project/target"
+      - "./${CONTAINER_DIR:-dtarget}:/usr/src/project/target"
       - "./Cargo.toml:/usr/src/project/Cargo.toml"
       - "./Cargo.lock:/usr/src/project/Cargo.lock"
       - "./data:/usr/src/project/data"
     working_dir: '/usr/src/project'
     user: "${SERVICE_UID:-1000}:${SERVICE_GID:-100}"
-    command: cargo run serve ./data/random-data.dbf 443
+    command: cargo run serve "${RANDOM_DBF:-./data/random-data.dbf}" 8080 
 
   vite:
     image: node:18
     volumes:
-      - "./web:/code"
+      - "./${WEB_DIR:-web}:/code"
     working_dir: "/code/converter-app"
     user: "${SERVICE_UID:-1000}:${SERVICE_GID:-100}"
     ports:
       - "8081:5173"
     init: true
-    command: "tail /dev/null"
-    # command: "bash -c 'npm install && npm run dev'"
+    command: "bash -c 'npm install && npm run dev'"
 

@@ -431,7 +431,7 @@ pub trait TableReaderState {}
 
 pub trait TableWriterState {}
 
-/// Header<R> is the initial state of a TableReader or TableWriter.
+/// `Header<R>` is the initial state of a TableReader or TableWriter.
 pub struct Header<R> {
     inner: R,
 }
