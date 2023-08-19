@@ -9,10 +9,15 @@ reg.json
 registration.json
 web-reg.csv
 
-
 bundle.tar
 bundle/
+bundle-win32.zip
+bundle-win64.zip
+
 data/problem.json
+data/tmp/
+data/live/
+
 debug.log
 deploy.sh
 flamegraph.svg
@@ -20,6 +25,3 @@ output.json
 perf.data
 perf.data.*
 screenshots/
-
-data/tmp/
-
