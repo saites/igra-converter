@@ -22,7 +22,7 @@ at [https://saites.dev](https://saites.dev).
 
 ## Quick Start
 
-1. Download a pre-built bundle for your operating system.
+1. Download a [pre-built bundle][releases] for your operating system.
 2. Unpack the bundle somewhere convenient.
 3. Open a terminal/command window in that directory.
 4. Optionally, generate a random database: `./converter gen_db RANDOM.DBF`
@@ -34,6 +34,8 @@ at [https://saites.dev](https://saites.dev).
 6. Open a browser and navigate to `http://localhost:8080`
    (or whatever port you chose earlier).
 
+
+[releases]: https://github.com/saites/igra-converter/releases
 
 ### Using the Web Interface
 
