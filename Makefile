@@ -65,7 +65,7 @@ serve-local-release serve-local: $(RANDOM_DBF)
 # Build a release version of the application in a container,
 # using the same glibc as on the production server.
 build: $(API_SERVER_PATH) $(WEB_DIST_DIR)
-$(API_SERVER_PATH): $(API_SERVER_SRCS) Dockerfile docker-compose.yaml
+$(API_SERVER_PATH): $(API_SERVER_SRCS) Dockerfile docker-compose.yaml | $(RELEASE_BUILD_DIR) $(DEBUG_BUILD_DIR)
 	$(COMPOSE) run --rm api-server cargo build --release
 
 
@@ -100,7 +100,7 @@ cp -r $(WEB_DIST_DIR) bundle/windows/web
 cp $(wordlist 2,$(words $(DATAFILES)),$(DATAFILES)) bundle/windows/data/
 cp $< bundle/windows/converter.exe
 cd bundle/windows && zip -r $@ *
-cp bundle/windows/$@ $@
+mv bundle/windows/$@ $@
 endef
 
 build-win64: $(WIN64_TARGET)
@@ -129,7 +129,7 @@ down:
 
 
 # Generate web assets from Vue source using the `vite` service.
-$(WEB_DIST_DIR): $(WEB_SRC)
+$(WEB_DIST_DIR): $(WEB_SRC) | $(RELEASE_BUILD_DIR) $(DEBUG_BUILD_DIR)
 	$(COMPOSE) run --rm vite npm run build-only
 
 

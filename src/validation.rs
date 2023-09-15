@@ -1,3 +1,4 @@
+use std::clone::Clone;
 use eddie::DamerauLevenshtein;
 use phf::{phf_map, phf_set};
 use serde::{Deserialize, Serialize};
@@ -8,8 +9,10 @@ use std::fmt::{Display, Formatter};
 use std::fs::File;
 use std::io;
 use std::io::BufReader;
-use std::iter::zip;
+use std::iter::{Iterator, zip};
 use std::ops::Deref;
+use chrono::NaiveDate;
+use memchr::memchr;
 
 use crate::bktree;
 use crate::bktree::BKTree;
@@ -918,6 +921,117 @@ impl<'a> Processed<'a> {
     }
 }
 
+fn at_most(s: &str, n: usize) -> String {
+    if s.len() >= n { &s[..n] } else { s }.to_string()
+}
+
+impl<'a> Report<'a> {
+    /// Turn the processed records into their dBASE equivalent.
+    ///
+    /// Note that the dBASE records aren't necessarily valid,
+    /// either internally, across records, or with some underlying database.
+    pub fn online_to_dbase(&self) -> Vec<RegistrationRecord> {
+        let today = chrono::Utc::now().naive_utc().date();
+
+        self.results.iter().map(|processed| {
+            let reg = &processed.registration;
+            let stalls = Decimal::from(reg.stalls.min(9) as i64);
+
+            let (prepaid_amount, prepaid_date) = if reg.payment.total > 0 {
+                (
+                    Some(Decimal::from_parts(((&reg.payment.total) / 100) as i32, (&reg.payment.total % 100) as u32)),
+                    Some(reg.estimate_payment_date().unwrap_or(today)),
+                )
+            } else {
+                (None, None)
+            };
+
+
+            let events = reg.events.iter().filter_map(|e| {
+                if let EventID::Known(eid) = e.id {
+                    eid.construct_name(e.round).map(|name| {
+                        let partners = if processed.partners.is_empty() {
+                            None
+                        } else {
+                            let ids: Vec<_> = processed.partners.iter().filter_map(|p| {
+                                if p.event == eid && p.round == e.round {
+                                    Some(p.igra_number.to_string())
+                                } else {
+                                    None
+                                }
+                            }).collect();
+
+                            if ids.is_empty() { None } else { Some(ids) }
+                        };
+
+                        EventRecord {
+                            name,
+                            partners,
+                            ..Default::default()
+                        }
+                    })
+                } else {
+                    None
+                }
+            }).collect();
+
+            if let Some(db) = processed.found.and_then(|num| self.relevant.get(num)) {
+                RegistrationRecord {
+                    igra_number: db.igra_number.clone(),
+                    association: db.association.clone(),
+                    ssn: db.ssn.clone(),
+                    division: db.division.clone(),
+                    last_name: db.last_name.clone(),
+                    first_name: db.first_name.clone(),
+                    city: db.city.clone(),
+                    state: db.state.clone(),
+                    sex: db.sex.clone(),
+                    // rodeo_association: at_most(rodeo_association, 2),
+                    events,
+                    stalls,
+                    prepaid_amount,
+                    prepaid_date,
+
+                    ..Default::default()
+                }
+            } else {
+                let c = &reg.contestant;
+                let association = memchr(b' ', c.association.member_assn.as_bytes())
+                    .map_or_else(|| at_most(&c.association.member_assn, 5),
+                                 |i| c.association.member_assn[0..i.min(5)].to_string());
+                let division = IGRA_DIVISIONS.get(&association).unwrap_or(&" ").to_string();
+
+                let (first_name, last_name) = if c.performance_name.is_empty() {
+                    (c.first_name.as_str(), c.last_name.as_str())
+                } else {
+                    memchr(b' ', c.performance_name.as_bytes())
+                        .map_or((c.performance_name.as_str(), ""),
+                                |i| c.performance_name.split_at(i))
+                };
+
+                RegistrationRecord {
+                    igra_number: at_most(&c.association.igra, 4),
+                    ssn: at_most(&c.ssn, 11),
+                    last_name: at_most(last_name, 17),
+                    first_name: at_most(first_name, 10),
+                    city: at_most(&c.address.city, 18),
+                    sex: if c.gender == "Cowboys" { "M" } else { "F" }.to_string(),
+                    // rodeo_association: at_most(rodeo_association, 2),
+                    state: at_most(STATES.get(&c.address.region).unwrap_or(&"  "), 2),
+                    association,
+                    division,
+                    events,
+                    stalls,
+                    prepaid_amount,
+                    prepaid_date,
+
+                    ..Default::default()
+                }
+            }
+        }).collect()
+    }
+}
+
 /// Validates an entry against all other entries and returns a possibly-emtpy list of problems.
 ///
 /// The validation rules only apply to entries which have a "found" record,
@@ -950,9 +1064,7 @@ fn validate_cross_reg(
 
         // For every event and round A claims to partner with B,
         // make sure B claims to partner with A.
-        let b_to_a = entry_b
-            .map(|b| b.confirmed_partners.get(person_a))
-            .flatten();
+        let b_to_a = entry_b.and_then(|b| b.confirmed_partners.get(person_a));
         for (event_a, round_a, index_a) in a_events_with_b {
             if entry_b.is_none() {
                 log::debug!("{} says they're partnering with {}, but {} isn't registered",
@@ -1159,39 +1271,152 @@ impl PartialEq<PersonRecord> for PersonRecord {
 impl Eq for PersonRecord {}
 
 /// An event registration record from the current (old, DOS-based) registration database.
+///
+/// To better reflect how the table is actually used,
+/// this doesn't exactly match the table layout, nor hold all the same fields.
+///
+/// When reading the table, `RODEO_NUM` is ignored.
+/// During writing, it's filled with `igra_number`, matching the 2020 rule change.
+///
+/// Event information is converted to its own `EventRecord` struct.
+/// During writing, events in that collection fill the relevant fields, and the rest are left blank.
+/// During reading, events for which a person is registered are collected in the `events` collection.
+/// A "T" or "S" column is converted to an `EventMetric::Time` or `EventMetric::Score`, respectively.
+/// That value is stored in the `outcome` field, though its initialized as `None`.
 #[allow(unused)]
 #[derive(Debug, Default)]
 pub struct RegistrationRecord {
     igra_number: String,
-    first_name: String,
-    last_name: String,
-    sex: String,
-    city: String,
-    state: String,
     association: String,
     ssn: String,
+    division: String,
+    last_name: String,
+    first_name: String,
+    city: String,
+    state: String,
+    sex: String,
 
     events: Vec<EventRecord>,
+
+    // I think these are either completely unused or used as scratch fields by the clipper app.
+    rodeo_score: Option<Decimal>,
+    rodeo_time: Option<Decimal>,
+    rodeo_association: String,
+    flag_1: String,
+    flag_2: String,
+
+    stalls: Decimal,
+    extra_flag: String, // also seems unused
 
     sat_points: Decimal,
     sun_points: Decimal,
     ext_points: Decimal,
     tot_points: Decimal,
+
+    prepaid_amount: Option<Decimal>,
+    prepaid_date: Option<NaiveDate>,
+
+    sat_dollars: Decimal,
+    sun_dollars: Decimal,
+    ext_dollars: Decimal,
+    tot_dollars: Decimal,
 }
+
+impl RegistrationRecord {
+    /// Return the event record matching the event name, if we have it.
+    fn get_event(&self, name: &str) -> Option<&EventRecord> {
+        self.events.iter().find(|e| e.name == name)
+    }
+
+    fn add_fields_for(&self, name: &str, entered_first: bool, n_partners: usize, data: &mut Vec<Field>) {
+        if let Some(e) = self.get_event(name) {
+            e.add_fields(entered_first, n_partners, data);
+        } else {
+            EventRecord::add_empty_fields(entered_first, n_partners, data);
+        }
+    }
+}
+
 
 /// An event result record from the current (old, DOS-based) registration database.
 #[derive(Debug, Default)]
 pub struct EventRecord {
+    /// The name of the event, which actually encodes the round information, too.
+    /// TODO: parse out the event and round info to make this more ergonomic.
     name: String,
+    /// IGRA numbers of registered partners, if known.
+    partners: Option<Vec<String>>,
     outcome: Option<EventMetric>,
     dollars: Decimal,
     points: Decimal,
     world: Decimal,
 }
 
+impl EventRecord {
+    /// Add data fields for this event, indicating it is entered.
+    fn add_fields(&self, entered_first: bool, n_partners: usize, data: &mut Vec<Field>) {
+        if entered_first {
+            data.push(Field::Character("X".to_string())); // entered
+        }
+
+        // For partner events, emit the IGRA number of partners,
+        // up to the expected number of partners.
+        // If the event requires more partners than recorded,
+        // emit an empty string for each of those fields.
+        let emitted = if let Some(partners) = &self.partners {
+            partners.iter().take(n_partners).for_each(|p| {
+                data.push(Field::Character(p.clone()))
+            });
+            partners.len()
+        } else {
+            0
+        };
+        (0..(n_partners.saturating_sub(emitted))).for_each(|_| {
+            data.push(Field::Character("".to_string()))
+        });
+
+        if !entered_first {
+            data.push(Field::Character("X".to_string())); // entered
+        }
+
+        if let Some(o) = self.outcome {
+            data.push(Field::Numeric(Some(
+                match o {
+                    EventMetric::Time(t) => t,
+                    EventMetric::Score(s) => s,
+                }
+            )));
+
+            data.push(Field::Numeric(Some(self.points)));
+            data.push(Field::Numeric(Some(self.dollars)));
+            data.push(Field::Numeric(Some(self.world)));
+        } else {
+            data.push(Field::Numeric(None)); // outcome
+            data.push(Field::Numeric(None)); // points
+            data.push(Field::Numeric(None)); // dollars
+            data.push(Field::Numeric(None)); // world
+        }
+    }
+
+    /// Add data fields for an event that was not entered.
+    fn add_empty_fields(entered_first: bool, n_partners: usize, data: &mut Vec<Field>) {
+        if entered_first {
+            data.push(Field::Character("".to_string())); // not entered
+            (0..n_partners).for_each(|_| { data.push(Field::Character("".to_string())) });
+        } else {
+            (0..n_partners).for_each(|_| { data.push(Field::Character("".to_string())) });
+            data.push(Field::Character("".to_string())); // not entered
+        }
+        data.push(Field::Numeric(None)); // outcome
+        data.push(Field::Numeric(None)); // points
+        data.push(Field::Numeric(None)); // dollars
+        data.push(Field::Numeric(None)); // world
+    }
+}
+
 /// An event is scored using either Time or Score.
 #[allow(dead_code)]
-#[derive(Debug)]
+#[derive(Debug, Copy, Clone)]
 pub enum EventMetric {
     Time(Decimal),
     Score(Decimal),
@@ -1230,6 +1455,7 @@ pub fn read_personnel<R: io::Read>(
             let field = field?;
             match (field.name, field.value) {
                 ("IGRA_NUM", Field::Character(s)) => person.igra_number = s,
+                // Ignore RODEO_NUM, which now must match IGRA_NUM.
                 ("STATE_ASSN", Field::Character(s)) => person.association = s,
                 ("BIRTH_DATE", Field::Character(s)) => person.birthdate = s,
                 ("SSN", Field::Character(s)) => person.ssn = s,
@@ -1266,6 +1492,7 @@ pub fn read_personnel<R: io::Read>(
     people.sort_by(|a, b| a.igra_number.cmp(&b.igra_number));
     Ok(people)
 }
+
 
 impl DBaseRecord for PersonRecord {
     fn describe(&self) -> Vec<FieldDescriptor> {
@@ -1486,8 +1713,339 @@ impl DBaseRecord for PersonRecord {
     }
 }
 
-/// Read event records from a DBF table.
-fn read_rodeo_events<R: io::Read>(
+impl DBaseRecord for RegistrationRecord {
+    /// Describe the layout of a registration table.
+    ///
+    /// The events each have a series of properties, designated by a letter, applied to each day.
+    /// It's assumed they have the following meaning, though that's not totally clear:
+    /// - E: "Entered" -- This person entered this event.
+    /// - S: "Score" -- score received
+    /// - T: "Time" -- time taken
+    /// - P: "Points" -- points received
+    /// - D: "Dollars" -- dollars won
+    /// - W: "World" -- world points earned
+    fn describe(&self) -> Vec<FieldDescriptor> {
+        vec![
+            // General details
+            FieldDescriptor { name: "IGRA_NUM".to_string(), field_type: FieldType::Character, length: 4, decimal_count: 0, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "RODEO_NUM".to_string(), field_type: FieldType::Character, length: 4, decimal_count: 0, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "STATE_ASSN".to_string(), field_type: FieldType::Character, length: 5, decimal_count: 0, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "SSN".to_string(), field_type: FieldType::Character, length: 11, decimal_count: 0, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "DIVISION".to_string(), field_type: FieldType::Character, length: 1, decimal_count: 0, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "LAST_NAME".to_string(), field_type: FieldType::Character, length: 17, decimal_count: 0, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "FIRST_NAME".to_string(), field_type: FieldType::Character, length: 10, decimal_count: 0, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "CITY".to_string(), field_type: FieldType::Character, length: 18, decimal_count: 0, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "STATE".to_string(), field_type: FieldType::Character, length: 2, decimal_count: 0, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "SEX".to_string(), field_type: FieldType::Character, length: 1, decimal_count: 0, work_area_id: 0, example: 1 },
+
+            // Bull Riding
+            FieldDescriptor { name: "BULL_E_SAT".to_string(), field_type: FieldType::Character, length: 1, decimal_count: 0, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "BULL_S_SAT".to_string(), field_type: FieldType::Numeric, length: 4, decimal_count: 1, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "BULL_P_SAT".to_string(), field_type: FieldType::Numeric, length: 3, decimal_count: 0, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "BULL_D_SAT".to_string(), field_type: FieldType::Numeric, length: 7, decimal_count: 2, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "BULL_W_SAT".to_string(), field_type: FieldType::Numeric, length: 7, decimal_count: 2, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "BULL_E_SUN".to_string(), field_type: FieldType::Character, length: 1, decimal_count: 0, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "BULL_S_SUN".to_string(), field_type: FieldType::Numeric, length: 4, decimal_count: 1, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "BULL_P_SUN".to_string(), field_type: FieldType::Numeric, length: 3, decimal_count: 0, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "BULL_D_SUN".to_string(), field_type: FieldType::Numeric, length: 7, decimal_count: 2, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "BULL_W_SUN".to_string(), field_type: FieldType::Numeric, length: 7, decimal_count: 2, work_area_id: 0, example: 1 },
+
+            // Bronc Riding
+            FieldDescriptor { name: "BRON_E_SAT".to_string(), field_type: FieldType::Character, length: 1, decimal_count: 0, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "BRON_S_SAT".to_string(), field_type: FieldType::Numeric, length: 4, decimal_count: 1, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "BRON_P_SAT".to_string(), field_type: FieldType::Numeric, length: 3, decimal_count: 0, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "BRON_D_SAT".to_string(), field_type: FieldType::Numeric, length: 7, decimal_count: 2, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "BRON_W_SAT".to_string(), field_type: FieldType::Numeric, length: 7, decimal_count: 2, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "BRON_E_SUN".to_string(), field_type: FieldType::Character, length: 1, decimal_count: 0, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "BRON_S_SUN".to_string(), field_type: FieldType::Numeric, length: 4, decimal_count: 1, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "BRON_P_SUN".to_string(), field_type: FieldType::Numeric, length: 3, decimal_count: 0, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "BRON_D_SUN".to_string(), field_type: FieldType::Numeric, length: 7, decimal_count: 2, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "BRON_W_SUN".to_string(), field_type: FieldType::Numeric, length: 7, decimal_count: 2, work_area_id: 0, example: 1 },
+
+            // Steer Riding (used to be "Wild Cow Riding")
+            FieldDescriptor { name: "WCOW_E_SAT".to_string(), field_type: FieldType::Character, length: 1, decimal_count: 0, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "WCOW_S_SAT".to_string(), field_type: FieldType::Numeric, length: 4, decimal_count: 1, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "WCOW_P_SAT".to_string(), field_type: FieldType::Numeric, length: 3, decimal_count: 0, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "WCOW_D_SAT".to_string(), field_type: FieldType::Numeric, length: 7, decimal_count: 2, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "WCOW_W_SAT".to_string(), field_type: FieldType::Numeric, length: 7, decimal_count: 2, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "WCOW_E_SUN".to_string(), field_type: FieldType::Character, length: 1, decimal_count: 0, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "WCOW_S_SUN".to_string(), field_type: FieldType::Numeric, length: 4, decimal_count: 1, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "WCOW_P_SUN".to_string(), field_type: FieldType::Numeric, length: 3, decimal_count: 0, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "WCOW_D_SUN".to_string(), field_type: FieldType::Numeric, length: 7, decimal_count: 2, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "WCOW_W_SUN".to_string(), field_type: FieldType::Numeric, length: 7, decimal_count: 2, work_area_id: 0, example: 1 },
+
+            // Chute Dogging
+            FieldDescriptor { name: "CHUT_E_SAT".to_string(), field_type: FieldType::Character, length: 1, decimal_count: 0, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "CHUT_T_SAT".to_string(), field_type: FieldType::Numeric, length: 7, decimal_count: 2, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "CHUT_P_SAT".to_string(), field_type: FieldType::Numeric, length: 3, decimal_count: 0, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "CHUT_D_SAT".to_string(), field_type: FieldType::Numeric, length: 7, decimal_count: 2, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "CHUT_W_SAT".to_string(), field_type: FieldType::Numeric, length: 7, decimal_count: 2, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "CHUT_E_SUN".to_string(), field_type: FieldType::Character, length: 1, decimal_count: 0, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "CHUT_T_SUN".to_string(), field_type: FieldType::Numeric, length: 7, decimal_count: 2, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "CHUT_P_SUN".to_string(), field_type: FieldType::Numeric, length: 3, decimal_count: 0, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "CHUT_D_SUN".to_string(), field_type: FieldType::Numeric, length: 7, decimal_count: 2, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "CHUT_W_SUN".to_string(), field_type: FieldType::Numeric, length: 7, decimal_count: 2, work_area_id: 0, example: 1 },
+
+            // Calf Roping on Foot
+            FieldDescriptor { name: "CALF_E_SAT".to_string(), field_type: FieldType::Character, length: 1, decimal_count: 0, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "CALF_T_SAT".to_string(), field_type: FieldType::Numeric, length: 7, decimal_count: 2, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "CALF_P_SAT".to_string(), field_type: FieldType::Numeric, length: 3, decimal_count: 0, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "CALF_D_SAT".to_string(), field_type: FieldType::Numeric, length: 7, decimal_count: 2, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "CALF_W_SAT".to_string(), field_type: FieldType::Numeric, length: 7, decimal_count: 2, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "CALF_E_SUN".to_string(), field_type: FieldType::Character, length: 1, decimal_count: 0, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "CALF_T_SUN".to_string(), field_type: FieldType::Numeric, length: 7, decimal_count: 2, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "CALF_P_SUN".to_string(), field_type: FieldType::Numeric, length: 3, decimal_count: 0, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "CALF_D_SUN".to_string(), field_type: FieldType::Numeric, length: 7, decimal_count: 2, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "CALF_W_SUN".to_string(), field_type: FieldType::Numeric, length: 7, decimal_count: 2, work_area_id: 0, example: 1 },
+
+            // Break-away
+            FieldDescriptor { name: "BRAK_E_SAT".to_string(), field_type: FieldType::Character, length: 1, decimal_count: 0, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "BRAK_T_SAT".to_string(), field_type: FieldType::Numeric, length: 7, decimal_count: 2, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "BRAK_P_SAT".to_string(), field_type: FieldType::Numeric, length: 3, decimal_count: 0, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "BRAK_D_SAT".to_string(), field_type: FieldType::Numeric, length: 7, decimal_count: 2, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "BRAK_W_SAT".to_string(), field_type: FieldType::Numeric, length: 7, decimal_count: 2, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "BRAK_E_SUN".to_string(), field_type: FieldType::Character, length: 1, decimal_count: 0, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "BRAK_T_SUN".to_string(), field_type: FieldType::Numeric, length: 7, decimal_count: 2, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "BRAK_P_SUN".to_string(), field_type: FieldType::Numeric, length: 3, decimal_count: 0, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "BRAK_D_SUN".to_string(), field_type: FieldType::Numeric, length: 7, decimal_count: 2, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "BRAK_W_SUN".to_string(), field_type: FieldType::Numeric, length: 7, decimal_count: 2, work_area_id: 0, example: 1 },
+
+            // Barrel Racing
+            FieldDescriptor { name: "BARR_E_SAT".to_string(), field_type: FieldType::Character, length: 1, decimal_count: 0, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "BARR_T_SAT".to_string(), field_type: FieldType::Numeric, length: 7, decimal_count: 2, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "BARR_P_SAT".to_string(), field_type: FieldType::Numeric, length: 3, decimal_count: 0, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "BARR_D_SAT".to_string(), field_type: FieldType::Numeric, length: 7, decimal_count: 2, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "BARR_W_SAT".to_string(), field_type: FieldType::Numeric, length: 7, decimal_count: 2, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "BARR_E_SUN".to_string(), field_type: FieldType::Character, length: 1, decimal_count: 0, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "BARR_T_SUN".to_string(), field_type: FieldType::Numeric, length: 7, decimal_count: 2, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "BARR_P_SUN".to_string(), field_type: FieldType::Numeric, length: 3, decimal_count: 0, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "BARR_D_SUN".to_string(), field_type: FieldType::Numeric, length: 7, decimal_count: 2, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "BARR_W_SUN".to_string(), field_type: FieldType::Numeric, length: 7, decimal_count: 2, work_area_id: 0, example: 1 },
+
+            // Pole Bending
+            FieldDescriptor { name: "POLE_E_SAT".to_string(), field_type: FieldType::Character, length: 1, decimal_count: 0, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "POLE_T_SAT".to_string(), field_type: FieldType::Numeric, length: 7, decimal_count: 2, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "POLE_P_SAT".to_string(), field_type: FieldType::Numeric, length: 3, decimal_count: 0, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "POLE_D_SAT".to_string(), field_type: FieldType::Numeric, length: 7, decimal_count: 2, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "POLE_W_SAT".to_string(), field_type: FieldType::Numeric, length: 7, decimal_count: 2, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "POLE_E_SUN".to_string(), field_type: FieldType::Character, length: 1, decimal_count: 0, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "POLE_T_SUN".to_string(), field_type: FieldType::Numeric, length: 7, decimal_count: 2, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "POLE_P_SUN".to_string(), field_type: FieldType::Numeric, length: 3, decimal_count: 0, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "POLE_D_SUN".to_string(), field_type: FieldType::Numeric, length: 7, decimal_count: 2, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "POLE_W_SUN".to_string(), field_type: FieldType::Numeric, length: 7, decimal_count: 2, work_area_id: 0, example: 1 },
+
+            // Flag Racing
+            FieldDescriptor { name: "FLAG_E_SAT".to_string(), field_type: FieldType::Character, length: 1, decimal_count: 0, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "FLAG_T_SAT".to_string(), field_type: FieldType::Numeric, length: 7, decimal_count: 2, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "FLAG_P_SAT".to_string(), field_type: FieldType::Numeric, length: 3, decimal_count: 0, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "FLAG_D_SAT".to_string(), field_type: FieldType::Numeric, length: 7, decimal_count: 2, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "FLAG_W_SAT".to_string(), field_type: FieldType::Numeric, length: 7, decimal_count: 2, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "FLAG_E_SUN".to_string(), field_type: FieldType::Character, length: 1, decimal_count: 0, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "FLAG_T_SUN".to_string(), field_type: FieldType::Numeric, length: 7, decimal_count: 2, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "FLAG_P_SUN".to_string(), field_type: FieldType::Numeric, length: 3, decimal_count: 0, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "FLAG_D_SUN".to_string(), field_type: FieldType::Numeric, length: 7, decimal_count: 2, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "FLAG_W_SUN".to_string(), field_type: FieldType::Numeric, length: 7, decimal_count: 2, work_area_id: 0, example: 1 },
+
+            // ?? I think these are some sort of scratch fields used by the Clipper program.
+            FieldDescriptor { name: "RODEO_SCOR".to_string(), field_type: FieldType::Numeric, length: 5, decimal_count: 1, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "RODEO_TIME".to_string(), field_type: FieldType::Numeric, length: 7, decimal_count: 2, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "RODEO_ASSO".to_string(), field_type: FieldType::Character, length: 2, decimal_count: 0, work_area_id: 0, example: 1 },
+
+            // Team Roping
+            // This event is handled so weirdly to work around how other events are recorded
+            // combined with the fact you can participate twice per go, once as header and again as heeler.
+            // From what I can tell, HD1E is "X" if the person entered as Header, HD2E is the Heeler's IGRA #,
+            // and TIM1/PTS1/DOL1/WOR1 are time/points/dollars/world values when they were heading.
+            // Similarly, HL2E is "X" if  they enter as Heeler, HD2E is the Header's IGRA #,
+            // and TIM2/PTS2/DOL2/WOR2 are time/points/dollars/world values when they were heeling.
+            //
+            // NOTE: The "entered" and "partner" fields are swapped between the two entry types!
+            FieldDescriptor { name: "TR_HD1E_SA".to_string(), field_type: FieldType::Character, length: 1, decimal_count: 0, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "TR_HL1E_SA".to_string(), field_type: FieldType::Character, length: 4, decimal_count: 0, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "TR_TIM1_SA".to_string(), field_type: FieldType::Numeric, length: 7, decimal_count: 2, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "TR_PTS1_SA".to_string(), field_type: FieldType::Numeric, length: 3, decimal_count: 0, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "TR_DOL1_SA".to_string(), field_type: FieldType::Numeric, length: 7, decimal_count: 2, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "TR_WOR1_SA".to_string(), field_type: FieldType::Numeric, length: 7, decimal_count: 2, work_area_id: 0, example: 1 },
+
+            FieldDescriptor { name: "TR_HD2E_SA".to_string(), field_type: FieldType::Character, length: 4, decimal_count: 0, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "TR_HL2E_SA".to_string(), field_type: FieldType::Character, length: 1, decimal_count: 0, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "TR_TIM2_SA".to_string(), field_type: FieldType::Numeric, length: 7, decimal_count: 2, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "TR_PTS2_SA".to_string(), field_type: FieldType::Numeric, length: 3, decimal_count: 0, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "TR_DOL2_SA".to_string(), field_type: FieldType::Numeric, length: 7, decimal_count: 2, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "TR_WOR2_SA".to_string(), field_type: FieldType::Numeric, length: 7, decimal_count: 2, work_area_id: 0, example: 1 },
+
+            FieldDescriptor { name: "TR_HD1E_SU".to_string(), field_type: FieldType::Character, length: 1, decimal_count: 0, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "TR_HL1E_SU".to_string(), field_type: FieldType::Character, length: 4, decimal_count: 0, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "TR_TIM1_SU".to_string(), field_type: FieldType::Numeric, length: 7, decimal_count: 2, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "TR_PTS1_SU".to_string(), field_type: FieldType::Numeric, length: 3, decimal_count: 0, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "TR_DOL1_SU".to_string(), field_type: FieldType::Numeric, length: 7, decimal_count: 2, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "TR_WOR1_SU".to_string(), field_type: FieldType::Numeric, length: 7, decimal_count: 2, work_area_id: 0, example: 1 },
+
+            FieldDescriptor { name: "TR_HD2E_SU".to_string(), field_type: FieldType::Character, length: 4, decimal_count: 0, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "TR_HL2E_SU".to_string(), field_type: FieldType::Character, length: 1, decimal_count: 0, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "TR_TIM2_SU".to_string(), field_type: FieldType::Numeric, length: 7, decimal_count: 2, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "TR_PTS2_SU".to_string(), field_type: FieldType::Numeric, length: 3, decimal_count: 0, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "TR_DOL2_SU".to_string(), field_type: FieldType::Numeric, length: 7, decimal_count: 2, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "TR_WOR2_SU".to_string(), field_type: FieldType::Numeric, length: 7, decimal_count: 2, work_area_id: 0, example: 1 },
+
+            // Steer Decorating
+            FieldDescriptor { name: "ST_EVNT_SA".to_string(), field_type: FieldType::Character, length: 1, decimal_count: 0, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "ST_PART_SA".to_string(), field_type: FieldType::Character, length: 4, decimal_count: 0, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "ST_TIME_SA".to_string(), field_type: FieldType::Numeric, length: 7, decimal_count: 2, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "ST_POIN_SA".to_string(), field_type: FieldType::Numeric, length: 3, decimal_count: 0, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "ST_DOLL_SA".to_string(), field_type: FieldType::Numeric, length: 7, decimal_count: 2, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "ST_WORL_SA".to_string(), field_type: FieldType::Numeric, length: 7, decimal_count: 2, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "ST_EVNT_SU".to_string(), field_type: FieldType::Character, length: 1, decimal_count: 0, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "ST_PART_SU".to_string(), field_type: FieldType::Character, length: 4, decimal_count: 0, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "ST_TIME_SU".to_string(), field_type: FieldType::Numeric, length: 7, decimal_count: 2, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "ST_POIN_SU".to_string(), field_type: FieldType::Numeric, length: 3, decimal_count: 0, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "ST_DOLL_SU".to_string(), field_type: FieldType::Numeric, length: 7, decimal_count: 2, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "ST_WORL_SU".to_string(), field_type: FieldType::Numeric, length: 7, decimal_count: 2, work_area_id: 0, example: 1 },
+
+            // Wild Drag Race
+            FieldDescriptor { name: "DR_EVNT_SA".to_string(), field_type: FieldType::Character, length: 1, decimal_count: 0, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "DR_PAR1_SA".to_string(), field_type: FieldType::Character, length: 4, decimal_count: 0, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "DR_PAR2_SA".to_string(), field_type: FieldType::Character, length: 4, decimal_count: 0, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "DR_TIME_SA".to_string(), field_type: FieldType::Numeric, length: 7, decimal_count: 2, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "DR_POIN_SA".to_string(), field_type: FieldType::Numeric, length: 3, decimal_count: 0, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "DR_DOLL_SA".to_string(), field_type: FieldType::Numeric, length: 7, decimal_count: 2, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "DR_WORL_SA".to_string(), field_type: FieldType::Numeric, length: 7, decimal_count: 2, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "DR_EVNT_SU".to_string(), field_type: FieldType::Character, length: 1, decimal_count: 0, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "DR_PAR1_SU".to_string(), field_type: FieldType::Character, length: 4, decimal_count: 0, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "DR_PAR2_SU".to_string(), field_type: FieldType::Character, length: 4, decimal_count: 0, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "DR_TIME_SU".to_string(), field_type: FieldType::Numeric, length: 7, decimal_count: 2, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "DR_POIN_SU".to_string(), field_type: FieldType::Numeric, length: 3, decimal_count: 0, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "DR_DOLL_SU".to_string(), field_type: FieldType::Numeric, length: 7, decimal_count: 2, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "DR_WORL_SU".to_string(), field_type: FieldType::Numeric, length: 7, decimal_count: 2, work_area_id: 0, example: 1 },
+
+            // Goat Dressing
+            FieldDescriptor { name: "GO_EVNT_SA".to_string(), field_type: FieldType::Character, length: 1, decimal_count: 0, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "GO_PART_SA".to_string(), field_type: FieldType::Character, length: 4, decimal_count: 0, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "GO_TIME_SA".to_string(), field_type: FieldType::Numeric, length: 7, decimal_count: 2, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "GO_POIN_SA".to_string(), field_type: FieldType::Numeric, length: 3, decimal_count: 0, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "GO_DOLL_SA".to_string(), field_type: FieldType::Numeric, length: 7, decimal_count: 2, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "GO_WORL_SA".to_string(), field_type: FieldType::Numeric, length: 7, decimal_count: 2, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "GO_EVNT_SU".to_string(), field_type: FieldType::Character, length: 1, decimal_count: 0, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "GO_PART_SU".to_string(), field_type: FieldType::Character, length: 4, decimal_count: 0, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "GO_TIME_SU".to_string(), field_type: FieldType::Numeric, length: 7, decimal_count: 2, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "GO_POIN_SU".to_string(), field_type: FieldType::Numeric, length: 3, decimal_count: 0, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "GO_DOLL_SU".to_string(), field_type: FieldType::Numeric, length: 7, decimal_count: 2, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "GO_WORL_SU".to_string(), field_type: FieldType::Numeric, length: 7, decimal_count: 2, work_area_id: 0, example: 1 },
+
+            // ?? From the Clipper program files, I think this is "Ribbon Roping".
+            // Maybe an old team event we don't do anymore?
+            FieldDescriptor { name: "RR_EVNT_SA".to_string(), field_type: FieldType::Character, length: 1, decimal_count: 0, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "RR_PART_SA".to_string(), field_type: FieldType::Character, length: 4, decimal_count: 0, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "RR_TIME_SA".to_string(), field_type: FieldType::Numeric, length: 7, decimal_count: 2, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "RR_POIN_SA".to_string(), field_type: FieldType::Numeric, length: 3, decimal_count: 0, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "RR_DOLL_SA".to_string(), field_type: FieldType::Numeric, length: 7, decimal_count: 2, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "RR_WORL_SA".to_string(), field_type: FieldType::Numeric, length: 7, decimal_count: 2, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "RR_EVNT_SU".to_string(), field_type: FieldType::Character, length: 1, decimal_count: 0, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "RR_PART_SU".to_string(), field_type: FieldType::Character, length: 4, decimal_count: 0, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "RR_TIME_SU".to_string(), field_type: FieldType::Numeric, length: 7, decimal_count: 2, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "RR_POIN_SU".to_string(), field_type: FieldType::Numeric, length: 3, decimal_count: 0, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "RR_DOLL_SU".to_string(), field_type: FieldType::Numeric, length: 7, decimal_count: 2, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "RR_WORL_SU".to_string(), field_type: FieldType::Numeric, length: 7, decimal_count: 2, work_area_id: 0, example: 1 },
+
+            // ?? In the few rodeo files I have, I see FLAG1 sometimes 'X', but not any instances of FLAG2 set.
+            // They might be another scratch space field used by the clipper application.
+            FieldDescriptor { name: "FLAG1".to_string(), field_type: FieldType::Character, length: 1, decimal_count: 0, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "FLAG2".to_string(), field_type: FieldType::Character, length: 1, decimal_count: 0, work_area_id: 19525, example: 1 },
+
+            // Number of stalls they requested.
+            FieldDescriptor { name: "STALL_FLAG".to_string(), field_type: FieldType::Numeric, length: 1, decimal_count: 0, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "EXTRA_FLAG".to_string(), field_type: FieldType::Character, length: 1, decimal_count: 0, work_area_id: 0, example: 1 },
+
+            // Total points. "EXT" seems unused.
+            FieldDescriptor { name: "SAT_POINTS".to_string(), field_type: FieldType::Numeric, length: 3, decimal_count: 0, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "SUN_POINTS".to_string(), field_type: FieldType::Numeric, length: 3, decimal_count: 0, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "EXT_POINTS".to_string(), field_type: FieldType::Numeric, length: 3, decimal_count: 0, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "TOT_POINTS".to_string(), field_type: FieldType::Numeric, length: 4, decimal_count: 0, work_area_id: 0, example: 1 },
+
+            // Payment info.
+            FieldDescriptor { name: "PRE_DATE".to_string(), field_type: FieldType::Date, length: 8, decimal_count: 0, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "PRE_PAID".to_string(), field_type: FieldType::Numeric, length: 7, decimal_count: 2, work_area_id: 0, example: 1 },
+
+            // Total winnings. "EXT" seems unused.
+            FieldDescriptor { name: "SAT_DOLLAR".to_string(), field_type: FieldType::Numeric, length: 7, decimal_count: 2, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "SUN_DOLLAR".to_string(), field_type: FieldType::Numeric, length: 7, decimal_count: 2, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "EXT_DOLLAR".to_string(), field_type: FieldType::Numeric, length: 7, decimal_count: 2, work_area_id: 0, example: 1 },
+            FieldDescriptor { name: "TOT_DOLLAR".to_string(), field_type: FieldType::Numeric, length: 7, decimal_count: 2, work_area_id: 0, example: 1 },
+        ]
+    }
+
+    fn to_record(&self) -> Vec<Field> {
+        let mut data = Vec::with_capacity(191);
+
+        data.push(Field::Character(self.igra_number.clone()));
+        data.push(Field::Character(self.igra_number.clone())); // RODEO_NUM is IGRA_NUM
+        data.push(Field::Character(self.association.clone()));
+        data.push(Field::Character(self.ssn.clone()));
+        data.push(Field::Character(self.division.clone()));
+        data.push(Field::Character(self.last_name.clone()));
+        data.push(Field::Character(self.first_name.clone()));
+        data.push(Field::Character(self.city.clone()));
+        data.push(Field::Character(self.state.clone()));
+        data.push(Field::Character(self.sex.clone()));
+
+        for event in [
+            "BULL_E_SAT", "BULL_E_SUN",
+            "BRON_E_SAT", "BRON_E_SUN",
+            "WCOW_E_SAT", "WCOW_E_SUN",
+            "CHUT_E_SAT", "CHUT_E_SUN",
+            "CALF_E_SAT", "CALF_E_SUN",
+            "BRAK_E_SAT", "BRAK_E_SUN",
+            "BARR_E_SAT", "BARR_E_SUN",
+            "POLE_E_SAT", "POLE_E_SUN",
+            "FLAG_E_SAT", "FLAG_E_SUN",
+        ] {
+            self.add_fields_for(event, true, 0, &mut data);
+        }
+
+        // Because the fields come in between, we need to split apart the logic for writing events.
+        data.push(Field::Numeric(self.rodeo_score));
+        data.push(Field::Numeric(self.rodeo_time));
+        data.push(Field::Character(self.rodeo_association.clone()));
+
+        // The "2nd" instances of Team Roping swap the order of entered and partner.
+        self.add_fields_for("TR_HD1E_SA", true, 1, &mut data);
+        self.add_fields_for("TR_HD2E_SA", false, 1, &mut data);
+        self.add_fields_for("TR_HD1E_SU", true, 1, &mut data);
+        self.add_fields_for("TR_HD2E_SU", false, 1, &mut data);
+
+        for (event, n_partners) in [
+            ("ST_EVNT_SA", 1), ("ST_EVNT_SU", 1),
+            ("DR_EVNT_SA", 2), ("DR_EVNT_SU", 2),
+            ("GO_EVNT_SA", 1), ("GO_EVNT_SU", 1),
+            ("RR_EVNT_SA", 1), ("RR_EVNT_SU", 1),
+        ] {
+            self.add_fields_for(event, true, n_partners, &mut data);
+        }
+
+        data.push(Field::Character(self.flag_1.clone()));
+        data.push(Field::Character(self.flag_2.clone()));
+        data.push(Field::Numeric(Some(self.stalls)));
+        data.push(Field::Character(self.extra_flag.clone()));
+
+        data.push(Field::Numeric(Some(self.sat_points)));
+        data.push(Field::Numeric(Some(self.sun_points)));
+        data.push(Field::Numeric(Some(self.ext_points)));
+        data.push(Field::Numeric(Some(self.tot_points)));
+
+        data.push(Field::Date(self.prepaid_date));
+        data.push(Field::Numeric(self.prepaid_amount));
+
+        data.push(Field::Numeric(Some(self.sat_dollars)));
+        data.push(Field::Numeric(Some(self.sun_dollars)));
+        data.push(Field::Numeric(Some(self.ext_dollars)));
+        data.push(Field::Numeric(Some(self.tot_dollars)));
+
+        data
+    }
+}
+
+/// Read registration/event records from a DBF table.
+pub fn read_registrations<R: io::Read>(
     table: TableReader<Header<R>>,
 ) -> DBaseResult<Vec<RegistrationRecord>> {
     let mut registrations = Vec::<RegistrationRecord>::with_capacity(table.n_records());
@@ -1500,51 +2058,140 @@ fn read_rodeo_events<R: io::Read>(
         for field in record {
             let f = field?;
 
-            if f.name.ends_with("_SAT") || f.name.ends_with("_SUN") {
-                let is_x = if let Field::Character(ref x) = f.value {
-                    x == "X"
-                } else {
-                    false
-                };
-
-                if &f.name[5..6] == "E" && is_x {
-                    let mut evnt = EventRecord::default();
-                    evnt.name = f.name.into();
-                    entrant.events.push(evnt);
-                } else if let Some(evnt) = entrant
-                    .events
-                    .iter_mut()
-                    .find(|e| e.name[..4] == f.name[..4] && e.name[6..] == f.name[6..])
-                {
-                    match (&f.name[5..6], f.value) {
-                        ("S", Field::Numeric(Some(n))) => {
-                            evnt.outcome = Some(EventMetric::Score(n))
-                        }
-                        ("T", Field::Numeric(Some(n))) => evnt.outcome = Some(EventMetric::Time(n)),
-                        ("P", Field::Numeric(Some(n))) => evnt.points = n,
-                        ("D", Field::Numeric(Some(n))) => evnt.dollars = n,
-                        ("W", Field::Numeric(Some(n))) => evnt.world = n,
-                        _ => {}
-                    }
-                }
-
-                continue;
-            }
-
             match (f.name, f.value) {
                 ("IGRA_NUM", Field::Character(s)) => entrant.igra_number = s,
-                ("FIRST_NAME", Field::Character(s)) => entrant.first_name = s,
-                ("LAST_NAME", Field::Character(s)) => entrant.last_name = s,
-                ("SEX", Field::Character(s)) => entrant.sex = s,
-                ("CITY", Field::Character(s)) => entrant.city = s,
-                ("STATE", Field::Character(s)) => entrant.state = s,
+                ("RODEO_NUM", _) => {} // ignored
                 ("STATE_ASSN", Field::Character(s)) => entrant.association = s,
                 ("SSN", Field::Character(s)) => entrant.ssn = s,
+                ("DIVISION", Field::Character(s)) => entrant.division = s,
+                ("LAST_NAME", Field::Character(s)) => entrant.last_name = s,
+                ("FIRST_NAME", Field::Character(s)) => entrant.first_name = s,
+                ("CITY", Field::Character(s)) => entrant.city = s,
+                ("STATE", Field::Character(s)) => entrant.state = s,
+                ("SEX", Field::Character(s)) => entrant.sex = s,
+                // <individual events appear here in the table layout>
+                // ??
+                ("RODEO_SCOR", Field::Numeric(n)) => entrant.rodeo_score = n,
+                ("RODEO_TIME", Field::Numeric(n)) => entrant.rodeo_time = n,
+                ("RODEO_ASSO", Field::Character(s)) => entrant.rodeo_association = s,
+                // <team events appear here in the table layout>
+                // ??
+                ("FLAG1", Field::Character(s)) => entrant.flag_1 = s,
+                ("FLAG2", Field::Character(s)) => entrant.flag_2 = s,
+                // horse stalls
+                ("STALL_FLAG", Field::Numeric(Some(n))) => entrant.stalls = n,
+                ("STALL_FLAG", Field::Numeric(None)) => entrant.stalls = Decimal::from(0),
+                ("EXTRA_FLAG", Field::Character(s)) => entrant.extra_flag = s,
+                // points
                 ("SAT_POINTS", Field::Numeric(Some(n))) => entrant.sat_points = n,
                 ("SUN_POINTS", Field::Numeric(Some(n))) => entrant.sun_points = n,
                 ("EXT_POINTS", Field::Numeric(Some(n))) => entrant.ext_points = n,
                 ("TOT_POINTS", Field::Numeric(Some(n))) => entrant.tot_points = n,
-                _ => {}
+                // prepaid amount
+                ("PRE_DATE", Field::Date(d)) => entrant.prepaid_date = d,
+                ("PRE_PAID", Field::Numeric(val)) => entrant.prepaid_amount = val,
+                // winnings
+                ("SAT_DOLLAR", Field::Numeric(Some(n))) => entrant.sat_dollars = n,
+                ("SUN_DOLLAR", Field::Numeric(Some(n))) => entrant.sun_dollars = n,
+                ("EXT_DOLLAR", Field::Numeric(Some(n))) => entrant.ext_dollars = n,
+                ("TOT_DOLLAR", Field::Numeric(Some(n))) => entrant.tot_dollars = n,
+
+                // Peel apart other fields identified by pattern matching.
+                (event_field, val) => {
+                    let (abbrev, field, day) = event_field.split_once('_')
+                        .and_then(|(name, rest)| {
+                            match rest.split_once('_') {
+                                Some((field, day)) => Some((name, field, day)),
+                                _ => None,
+                            }
+                        })
+                        .expect(&*format!("Unknown field: '{event_field}' with value '{val:?}'"));
+
+
+                    // Extract the event name, if its a recognized form.
+                    let event = match day {
+                        "SAT" | "SUN" => {
+                            entrant.events.iter_mut()
+                                .find(|e| &e.name[..4] == abbrev && &e.name[7..] == day)
+                        }
+                        "SA" | "SU" => {
+                            match field {
+                                // Team Roping doesn't fit the pattern of the rest of the events.
+                                // Obnoxiously, 2 of the team roping events list partners before entry.
+                                // So, when we encounter HD2E, we don't have an event entry for it yet.
+                                // The next block will create the event if they listed a partner,
+                                // and we'll see that event when we reach HL2E
+                                // We assume that if they had a partner listed, they entered the event.
+                                // If they _do_ enter the event _without_ listing a partner,
+                                // we'll add the event instance when we see the "X" for entry.
+                                // Thankfully, the other fields all come after that point anyway.
+                                "HD2E" => { None }
+                                "HL2E" | "TIM2" | "PTS2" | "DOL2" | "WOR2" => {
+                                    entrant.events.iter_mut()
+                                        .find(|e| &e.name[..2] == abbrev
+                                            && &e.name[3..7] == "HD2E"
+                                            && &e.name[8..] == day
+                                        )
+                                }
+                                _ => {
+                                    entrant.events.iter_mut()
+                                        .find(|e| &e.name[..2] == abbrev && &e.name[8..] == day)
+                                }
+                            }
+                        }
+                        _ => None,
+                    };
+
+                    match (field, val, event) {
+                        ("E" | "EVNT" | "HD1E" | "HL2E", Field::Character(ref x), None) => {
+                            if x == "X" {
+                                entrant.events.push(EventRecord {
+                                    // TODO: translate the name into a KnownEvent
+                                    name: f.name.into(),
+                                    ..EventRecord::default()
+                                });
+                            }
+                        }
+                        // Create an event for HD2E if they listed a partner.
+                        ("HD2E", Field::Character(p), None) => {
+                            if !p.is_empty() {
+                                entrant.events.push(EventRecord {
+                                    name: f.name.into(),
+                                    partners: Some(vec![p]),
+                                    ..EventRecord::default()
+                                });
+                            }
+                        }
+                        ("HL2E", Field::Character(_), Some(_)) => {
+                            // See notes above about the weirdness of Team Roping.
+                        }
+                        (_, _, None) => {} // TODO: make this work better
+                        // Score or Time: distinguish whether one is recorded.
+                        ("S", Field::Numeric(Some(n)), Some(evnt)) => evnt.outcome = Some(EventMetric::Score(n)),
+                        ("T" | "TIME" | "TIM1" | "TIM2", Field::Numeric(Some(n)), Some(e)) => e.outcome = Some(EventMetric::Time(n)),
+                        // If the value is None, don't set the outcome field.
+                        ("S", Field::Numeric(None), Some(_)) => {}
+                        ("T" | "TIME" | "TIM1" | "TIM2", Field::Numeric(None), Some(_)) => {}
+                        // Extract points/dollars/world points if set
+                        ("P" | "POIN" | "PTS1" | "PTS2", Field::Numeric(Some(n)), Some(e)) => e.points = n,
+                        ("P" | "POIN" | "PTS1" | "PTS2", Field::Numeric(None), Some(_)) => {}
+                        ("D" | "DOLL" | "DOL1" | "DOL2", Field::Numeric(Some(n)), Some(e)) => e.dollars = n,
+                        ("D" | "DOLL" | "DOL1" | "DOL2", Field::Numeric(None), Some(_)) => {}
+                        ("W" | "WORL" | "WOR1" | "WOR2", Field::Numeric(Some(n)), Some(e)) => e.world = n,
+                        ("W" | "WORL" | "WOR1" | "WOR2", Field::Numeric(None), Some(_)) => {}
+                        // Grab partner IGRA numbers.
+                        ("PART" | "PAR1" | "PAR2" | "HL1E", Field::Character(p), Some(e)) => {
+                            if let Some(ref mut partners) = e.partners {
+                                partners.push(p);
+                            } else {
+                                e.partners = Some(vec![p]);
+                            }
+                        }
+                        (field, val, _) => {
+                            panic!("Unknown field: '{field}' with value '{val:?}' for event '{abbrev}' ('{event_field}')");
+                        }
+                    }
+                }
             }
         }
 
@@ -1598,17 +2245,19 @@ impl Display for RegistrationRecord {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "{:4} {:6} {:10} {:17} {cat:7} {:18} {:2}  sat={:5}  sun={:5}  tot={:5}  ext={:5}",
+            "{:4} {:6} {:10} {:17} {cat:7} {:18} {:2}  #={:2}  sat={:5}  sun={:5}  tot={:5}  ext={:5}  pnl={pnl:10.02}",
             self.igra_number,
             self.association,
             self.first_name,
             self.last_name,
             self.city,
             self.state,
+            self.events.len(),
             self.sat_points,
             self.sun_points,
             self.tot_points,
             self.ext_points,
+            pnl = self.tot_dollars.to_f64_lossy() - (self.events.len() as f64 * 30.0),
             cat = if self.sex == "M" { "COWBOY" } else { "COWGIRL" }
         )
     }
@@ -1696,6 +2345,81 @@ static REGIONS: phf::Map<&'static str, &'static str> = phf_map! {
     "FC" => "Foreign Country",
 };
 
+static STATES: phf::Map<&'static str, &'static str> = phf_map! {
+    "Alaska" => "AK",
+    "Alabama" => "AL",
+    "Arkansas" => "AR",
+    "Arizona" => "AZ",
+    "California" => "CA",
+    "Colorado" => "CO",
+    "Connecticut" => "CT",
+    "Delaware" => "DE",
+    "Florida" => "FL",
+    "Georgia" => "GA",
+    "Hawaii" => "HI",
+    "Iowa" => "IA",
+    "Idaho" => "ID",
+    "Illinois" => "IL",
+    "Indiana" => "IN",
+    "Kansas" => "KS",
+    "Kentucky" => "KY",
+    "Louisiana" => "LA",
+    "Massachusetts" => "MA",
+    "Maryland" => "MD",
+    "Maine" => "ME",
+    "Michigan" => "MI",
+    "Minnesota" => "MN",
+    "Missouri" => "MO",
+    "Mississippi" => "MS",
+    "Montana" => "MT",
+    "North Carolina" => "NC",
+    "North Dakota" => "ND",
+    "Nebraska" => "NE",
+    "New Hampshire" => "NH",
+    "New Jersey" => "NJ",
+    "New Mexico" => "NM",
+    "Nevada" => "NV",
+    "New York" => "NY",
+    "Ohio" => "OH",
+    "Oklahoma" => "OK",
+    "Ontario" => "ON",
+    "Oregon" => "OR",
+    "Pennsylvania" => "PA",
+    "Rhode Island" => "RI",
+    "South Carolina" => "SC",
+    "South Dakota" => "SD",
+    "Tennessee" => "TN",
+    "Texas" => "TX",
+    "Utah" => "UT",
+    "Virginia" => "VA",
+    "Vermont" => "VT",
+    "Washington" => "WA",
+    "Wisconsin" => "WI",
+    "West Virginia" => "WV",
+    "Wyoming" => "WY",
+
+    "District Of Columbia" => "DC",
+    "Guam" => "GU",
+    "Puerto Rico" => "PR",
+    "Virgin Islands" => "VI",
+
+    "Alberta" => "AB",
+    "British Columbia" => "BC",
+    "Newfoundland and Labrador" => "NF",
+    "Manitoba" => "MB",
+    "New Brunswick" => "NB",
+    "Nova Scotia" => "NS",
+    "Northwest Territories" => "NT",
+    "Prince Edward Island" => "PE",
+    "Quebec" => "PQ",
+    "Saskatchewan" => "SK",
+    "Yukon Territory" => "YT",
+
+    "Army Europe" => "AE",
+    "Canal Zone" => "CZ",
+    "Foreign Country" => "FC",
+};
+
 impl PersonRecord {
     pub fn region(&self) -> Option<&&'static str> {
         REGIONS.get(&self.state.to_ascii_uppercase())
@@ -1704,6 +2428,24 @@ impl PersonRecord {
 
 pub static CANADIAN_REGIONS: phf::Set<&'static str> = phf_set! {
     "AB", "BC", "LB", "MB", "NB", "NF", "NS", "NT", "PE", "PQ", "SK", "YT",
+};
+
+pub static IGRA_DIVISIONS: phf::Map<&'static str, &'static str> = phf_map! {
+    "CRGRA" => "1",
+    "DSRA" =>  "3",
+    "AGRA" =>  "2",
+    "GSGRA" => "1",
+    "CGRA" =>  "2",
+    "ASGRA" => "4",
+    "MIGRA" => "4",
+    "NSGRA" => "4",
+    "MGRA" => "3",
+    "NMGRA" => "2",
+    "NGRA" => "1",
+    "GPRA" => "3",
+    "TGRA" => "3",
+    "RRRA" => "3",
+    "UGRA" => "2",
 };
 
 #[allow(unused)]
@@ -1770,5 +2512,73 @@ impl RodeoEvent {
         };
 
         Some(event)
+    }
+
+    fn event_record_prefix(self) -> &'static str {
+        match self {
+            RodeoEvent::CalfRopingOnFoot => { "CALF_E" }
+            RodeoEvent::MountedBreakaway => { "BRAK_E" }
+            RodeoEvent::TeamRopingHeader => { "TR_HD1E" }
+            RodeoEvent::TeamRopingHeeler => { "TR_HL2E" }
+            RodeoEvent::PoleBending => { "POLE_E" }
+            RodeoEvent::BarrelRacing => { "BARR_E" }
+            RodeoEvent::FlagRacing => { "FLAG_E" }
+            RodeoEvent::ChuteDogging => { "CHUT_E" }
+            RodeoEvent::RanchSaddleBroncRiding => { "BRON_E" }
+            RodeoEvent::SteerRiding => { "WCOW_E" }
+            RodeoEvent::BullRiding => { "BULL_E" }
+            RodeoEvent::GoatDressing => { "GO_EVNT" }
+            RodeoEvent::SteerDecorating => { "ST_EVNT" }
+            RodeoEvent::WildDragRace => { "DR_EVNT" }
+        }
+    }
+
+    /// Given a round, what should the name be?
+    ///
+    /// Returns `None` if the round is not 1 or 2,
+    /// as the original system only considered Saturday and Sunday.
+    fn construct_name(self, round: u64) -> Option<String> {
+        match self {
+            RodeoEvent::TeamRopingHeader
+                | RodeoEvent::TeamRopingHeeler
+                | RodeoEvent::SteerDecorating
+                | RodeoEvent::WildDragRace
+                | RodeoEvent::GoatDressing => {
+                  if round == 1 {
+                      return Some(format!("{}_SA", self.event_record_prefix()));
+                  } else if round == 2 {
+                      return Some(format!("{}_SU", self.event_record_prefix()));
+                  } else {
+                      return None;
+                  }
+            },
+            RodeoEvent::CalfRopingOnFoot 
+                | RodeoEvent::MountedBreakaway 
+                | RodeoEvent::PoleBending 
+                | RodeoEvent::BarrelRacing 
+                | RodeoEvent::FlagRacing 
+                | RodeoEvent::ChuteDogging 
+                | RodeoEvent::RanchSaddleBroncRiding 
+                | RodeoEvent::SteerRiding 
+                | RodeoEvent::BullRiding => { 
+                  if round == 1 {
+                      return Some(format!("{}_SAT", self.event_record_prefix()));
+                  } else if round == 2 {
+                      return Some(format!("{}_SUN", self.event_record_prefix()));
+                  } else {
+                      return None;
+                  }
+             },
+        }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::RodeoEvent;
+    #[test]
+    fn name_from_event() {
+        let name = RodeoEvent::TeamRopingHeader.construct_name(1);
+        assert_eq!(name, Some("TR_HD1E_SA".into()));
     }
 }

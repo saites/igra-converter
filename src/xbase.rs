@@ -28,24 +28,23 @@ define_layout!(dbase_header, LittleEndian, {
     n_records: u32,
     n_header_bytes: u16,
     n_record_bytes: u16, // sum of lengths of each record field + 1
-    _reserved1: [u8; 2],
+    reserved_1: [u8; 2],
     incomplete_transaction: u8,
     encrypted: u8,
-    _reserved2: [u8; 12],
+    reserved_2: [u8; 12],
     is_production: u8,
     language_driver_id: u8,
-    // _reserved3: [u8; 2],
 });
 
 define_layout!(field_descriptor, LittleEndian, {
     name: [u8; 11],
     f_type: u8,
-    _reserved1: [u8; 4],
+    reserved_1: [u8; 4],
     length: u8,
     decimal_count: u8,
     work_area_id: u16,
     example: u8,
-    _reserved2: [u8; 10],
+    reserved_2: [u8; 10],
     is_production: u8,
 });
 
@@ -108,15 +107,26 @@ pub struct Decimal {
 }
 
 impl Decimal {
+    pub fn from_parts(integral: i32, fractional: u32) -> Self {
+        let mut n = integral as i64;
+        let mut f = fractional;
+        while f > 0 {
+            n *= 10;
+            f /= 10;
+        }
+
+        Self::from(n + fractional as i64)
+    }
+
     /// Return the integral portion of the value
     /// (i.e., the portion before the decimal point).
-    fn integral(&self) -> i64 {
+    pub fn integral(&self) -> i64 {
         self.mantissa / (10_i64.pow(self.exponent))
     }
 
     /// Return the fractional portion of the value
     /// (i.e., the portion after the decimal point).
-    fn fractional(&self) -> u64 {
+    pub fn fractional(&self) -> u64 {
         if self.mantissa > 0 {
             (self.mantissa % (10_i64.pow(self.exponent))) as u64
         } else {
@@ -126,26 +136,63 @@ impl Decimal {
 
     /// Return the value as an float, possibly loosing precision.
     pub fn to_f64_lossy(&self) -> f64 {
-        return self.integral() as f64 + self.fractional() as f64;
+        return self.mantissa as f64 / (10_i64.pow(self.exponent) as f64);
+    }
+}
+
+impl From<i64> for Decimal {
+    fn from(value: i64) -> Self {
+        let mut exponent = 0;
+        let mut av = value.abs();
+        while av > 0 && av % 10 == 0 {
+            exponent += 1;
+            av /= 10;
+        }
+
+        Decimal{
+            mantissa: if value > 0 { av } else { -av },
+            exponent,
+        }
     }
 }
 
 impl Display for Decimal {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        if f.width().is_none() {
-            write!(f, "{}.{:0width$}", self.integral(), self.fractional(), width = self.exponent as usize)
+        if let Some(str_width) = f.width() {
+            if self.exponent == 0 {
+                write!(f, "{:>str_width$}", self.integral())
+            } else {
+                let s = format!("{}.{:0width$}", self.integral(), self.fractional(), width = self.exponent as usize);
+                write!(f, "{s:>str_width$}")
+            }
         } else {
-            let s = format!("{}.{:0width$}", self.integral(), self.fractional(), width = self.exponent as usize);
-            write!(f, "{s:>width$}", width = f.width().unwrap())
+            if self.exponent == 0 {
+                write!(f, "{}", self.integral())
+            } else {
+                write!(f, "{}.{:0width$}", self.integral(), self.fractional(), width = self.exponent as usize)
+            }
         }
     }
 }
 
+/// A DBase Field.
+///
+/// These are the core dBASE data types, supported by most xbase programs.
+/// Some xbase programs supported more data types,
+/// or allowed variations on these data types based on the field descriptor.
 #[allow(unused)]
 #[derive(Debug)]
 pub enum Field {
+    /// ASCII text, fewer than 254 characters, typically null-terminated, though may be padded with spaces.
+    /// //
+    /// Some programs extended this length by reusing the decimal count field as a high byte,
+    /// but this library only concerns itself with the `length` alone.
+    ///
+    /// When reading `Character` fields, this library stops at the first null byte, trims spaces,
+    /// and validates that the content consists only of ASCII characters.
+    /// When writing `Character` fields, the content is padded with spaces.
     Character(String),
-    Date(NaiveDate),
+    Date(Option<NaiveDate>),
     Float(f64),
     Boolean(Option<bool>),
     Memo(Option<u64>),
@@ -166,6 +213,8 @@ pub struct FieldDescriptor {
 pub enum DBaseErrorKind {
     #[error("expected magic byte 0x0d to terminate header, but found {found}")]
     InvalidHeaderTerminator { found: u8 },
+    #[error("non-ascii data: '{}'", .0)]
+    NonASCIIData(String),
     #[error("unable to parse date as YYYYMMDD: {}", .0)]
     InvalidDate(String),
     #[error("unknown logical value: {}", .0)]
@@ -176,6 +225,8 @@ pub enum DBaseErrorKind {
     InvalidLastUpdated(u16, u8, u8),
     #[error("a DBase table must have at least 1 record")]
     NoRecords,
+    #[error("data exceeds field width: '{}'", .0)]
+    DataExceedsLength(String),
 
     #[error(transparent)]
     FloatConversionError(#[from] ParseFloatError),
@@ -187,18 +238,41 @@ pub enum DBaseErrorKind {
 
 pub type DBaseResult<T> = Result<T, DBaseErrorKind>;
 
-fn data_to_string(data: &[u8]) -> String {
-    String::from_utf8_lossy(&data)
-        .trim_end_matches('\0')
-        .trim()
-        .to_string()
+/// Converts a slice of bytes into a &str,
+/// stopping at the first NULL byte (if present),
+/// trimming trailing ASCII whitespace.
+///
+/// This returns an error if the contents are not valid ASCII.
+fn data_to_string(data: &[u8]) -> DBaseResult<&str>{
+    let mut s = memchr::memchr(b'\0', data).map_or(data, |null| { &data[..null] });
+
+    {
+        // This block is the .trim_ascii_end() implementation currently in nightly.
+        // Licensed under the MIT license <http://opensource.org/licenses/MIT>.
+        while let [rest @ .., last] = s {
+            if last.is_ascii_whitespace() {
+                s = rest;
+            } else {
+                break;
+            }
+        }
+    }
+
+    if !s.is_ascii() {
+        return Err(DBaseErrorKind::NonASCIIData(String::from_utf8_lossy(data).to_string()));
+    }
+
+    // SAFETY: s is ASCII, and therefore valid UTF-8.
+    let s = unsafe { std::str::from_utf8_unchecked(s) };
+    Ok(s.trim_end_matches(' '))
 }
 
 impl FieldDescriptor {
+    /// Extract a FieldDescriptor from a byte array.
     fn from_bytes(data: &[u8]) -> DBaseResult<FieldDescriptor> {
         let view = field_descriptor::View::new(data);
 
-        let name = data_to_string(view.name());
+        let name = data_to_string(view.name())?.to_string();
 
         let field_type = match view.f_type().read() {
             b'C' => Ok(FieldType::Character),
@@ -220,11 +294,14 @@ impl FieldDescriptor {
         })
     }
 
+    /// Write the field descriptor into the byte buffer.
+    /// It must have enough space to hold the contents.
+    ///
+    /// The `name` field is written with space-padding.
     fn to_bytes(&self, buf: &mut [u8]) -> DBaseResult<()> {
         let mut view = field_descriptor::View::new(buf);
-        view.name_mut()[..11].copy_from_slice(
-            format!("{:11}", &self.name).as_bytes()
-        );
+        let name_len = self.name.len().min(11);
+        view.name_mut()[..name_len].copy_from_slice(&self.name[..name_len].as_bytes());
         view.f_type_mut().write(match self.field_type {
             FieldType::Character => { b'C' }
             FieldType::Date => { b'D' }
@@ -240,43 +317,81 @@ impl FieldDescriptor {
         Ok(())
     }
 
+    /// Write a `field` to the given writer using this description.
+    ///
+    /// Fields are padded with trailing whitespace to their data length when appropriate.
+    /// `Character` fields are checked to ensure they'll fit their length and are ASCII.
+    /// `Boolean` fields are written as `T`, `F`, and `?` for true, false, and `None` (respectively).
     fn write_field(&self, field: &Field, w: &mut impl io::Write) -> DBaseResult<()> {
+        log::trace!("Writing {} with {:?}", self.name, field);
+
         match field {
-            Field::Character(s) => { write!(w, "{s:<0$.0$}", self.length)?; }
+            Field::Character(s) => {
+                if s.len() > self.length {
+                    log::error!("Too long: {} > {} for field {}", s.len(), self.length, self.name);
+                    return Err(DBaseErrorKind::DataExceedsLength(s.clone()))
+                }
+                if !s.is_ascii() {
+                    return Err(DBaseErrorKind::NonASCIIData(s.clone()))
+                }
+                write!(w, "{s:<0$.0$}", self.length)?;
+            }
             Field::Float(f) => { write!(w, "{f:>0$}", self.length)?; }
             Field::Boolean(Some(b)) => { w.write(if *b { &[b'T'] } else { &[b'F'] })?; }
             Field::Boolean(None) => { w.write(&[b'?'])?; }
-            Field::Numeric(Some(n)) => { write!(w, "{n:>0$}", self.length)?; }
-            Field::Numeric(None) => {}
+            Field::Numeric(Some(n)) => {
+                let s;
+                if self.decimal_count == 0 {
+                    s = format!("{}", n.integral());
+                } else {
+                    s = format!("{}.{:0w$}", n.integral(), n.fractional(), w=self.decimal_count as usize);
+                }
+                write!(w, "{s:>0$}", self.length)?;
+            }
             Field::Memo(Some(id)) => { write!(w, "{id:>10}")?; }
-            Field::Memo(None) => {}
-            Field::Date(d) => { write!(w, "{y:04}{m:02}{d:02}", y = d.year(), m = d.month(), d = d.day())?; }
+            Field::Date(Some(d)) => { write!(w, "{y:04}{m:02}{d:02}", y = d.year(), m = d.month(), d = d.day())?; }
+            Field::Numeric(None) | Field::Memo(None) | Field::Date(None) => {
+                write!(w, "{:1$}", "", self.length)?;
+            }
         };
 
         Ok(())
     }
 
+    /// Read a dBASE field from a byte slice.
     pub fn read_field(&self, data: &[u8]) -> DBaseResult<Field> {
-        let val = data_to_string(&data[0..self.length]);
+        let val = data_to_string(&data[0..self.length])?;
         match self.field_type {
             FieldType::Character => {
-                Ok(Field::Character(val))
+                Ok(Field::Character(val.to_string()))
             }
             FieldType::Date => {
-                Ok(Field::Date(NaiveDate::parse_from_str(&val, "%Y%m%d")
-                    .map_err(|_| DBaseErrorKind::InvalidDate(val))?))
+                if val.is_empty() {
+                    return Ok(Field::Date(None));
+                }
+                Ok(Field::Date(Some(NaiveDate::parse_from_str(val, "%Y%m%d")
+                    .map_err(|_| DBaseErrorKind::InvalidDate(val.to_string()))?)))
             }
             FieldType::Float => {
-                Ok(Field::Float(f64::from_str(&val)?))
+                let val = val.trim_start_matches(' ');
+                Ok(Field::Float(if val.is_empty() { 0.0 } else { f64::from_str(val)? }))
             }
             FieldType::Numeric => {
+                let val = val.trim_start_matches(' ');
                 if val.is_empty() {
                     return Ok(Field::Numeric(None));
                 }
 
+                fn empty_to_zero(err: ParseIntError) -> Result<i64, ParseIntError> {
+                    match err.kind() {
+                        std::num::IntErrorKind::Empty => Ok(0),
+                        _ => Err(err)
+                    }
+                }
+
                 let dec_point = val.find('.');
                 if dec_point.is_none() {
-                    let mantissa = i64::from_str(&val)?;
+                    let mantissa = i64::from_str(val).or_else(empty_to_zero)?;
                     return Ok(Field::Numeric(Some(Decimal { mantissa, exponent: 0 })));
                 }
 
@@ -287,39 +402,36 @@ impl FieldDescriptor {
                 log::trace!("val: {}, point: {:?} int: {}, frac: {}, exp: {}",
                     val, dec_point, integral_s, fractional_s, exponent);
 
-                fn empty_to_zero(err: ParseIntError) -> Result<i64, ParseIntError> {
-                    match err.kind() {
-                        std::num::IntErrorKind::Empty => Ok(0),
-                        _ => Err(err)
-                    }
-                }
-
                 let integral = i64::from_str(&integral_s).or_else(empty_to_zero)?;
                 let fractional = i64::from_str(&fractional_s).or_else(empty_to_zero)?;
                 let mantissa = integral * (10_i64.pow(exponent)) + fractional;
                 Ok(Field::Numeric(Some(Decimal { mantissa, exponent })))
             }
             FieldType::Boolean => {
-                match val.as_str() {
+                match val {
                     "y" | "Y" | "t" | "T" => { Ok(Field::Boolean(Some(true))) }
                     "n" | "N" | "f" | "F" => { Ok(Field::Boolean(Some(false))) }
                     "?" => Ok(Field::Boolean(None)),
-                    _ => Err(UnknownLogicalValue(val)),
+                    _ => Err(UnknownLogicalValue(val.to_string())),
                 }
             }
             FieldType::Memo => {
                 if val.is_empty() {
                     Ok(Field::Memo(None))
                 } else {
-                    Ok(Field::Memo(Some(u64::from_str(&val)?)))
+                    Ok(Field::Memo(Some(u64::from_str(val)?)))
                 }
             }
         }
     }
 }
 
-/// Holds information read from a DBase table header or needed to write one.
+/// Describes a dBASE table.
+///
+/// This is typically read from the header of a dBASE file
+/// or used to write one.
 #[derive(Debug)]
+#[allow(dead_code)]
 struct DBaseTable {
     last_updated: NaiveDate,
     flags: u8,
@@ -410,28 +522,32 @@ impl<W> TableWriter<Header<W>>
     }
 }
 
+/// Tells the `TableWriter` how to write a table from a collection of records.
 pub trait DBaseRecord {
-    fn to_record(&self) -> Vec<Field>;
+    /// Describe the record format as a list of `FieldDescriptor`s.
     fn describe(&self) -> Vec<FieldDescriptor>;
+    /// Return a collection of `Field`s,
+    /// which must be in the order given by `describe`.
+    fn to_record(&self) -> Vec<Field>;
 }
 
-/// A TableReader can be used to read a DBase table.
+/// Used to read a DBase table.
 ///
 /// The state parameter tracks the current state of the reader.
 /// When created, it must read the table header information
 /// and will be in the Header state.
-///
 pub struct TableReader<S: TableReaderState> {
     table: Box<DBaseTable>,
     state: S,
 }
 
-/// These are marker traits implemented by table reader/writer states.
+/// Marker traits by for table reader states.
 pub trait TableReaderState {}
 
+/// Marker traits by for table writer states.
 pub trait TableWriterState {}
 
-/// `Header<R>` is the initial state of a TableReader or TableWriter.
+/// Initial state of a TableReader or TableWriter.
 pub struct Header<R> {
     inner: R,
 }

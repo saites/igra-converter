@@ -61,6 +61,7 @@ impl<T, O> BKTree<T, O>
     }
 
     /// Find elements within a certain distance of the given element.
+    #[allow(dead_code)]
     pub fn find<S>(&self, item: &S, max_dist: O) -> Vec<(O, &T)>
     where
         S: Metric<T, Output=O>,

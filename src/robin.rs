@@ -1,4 +1,4 @@
-use chrono::{NaiveDate};
+use chrono::{NaiveDate, NaiveDateTime};
 use serde::{Serialize, Deserialize};
 use crate::validation::RodeoEvent;
 
@@ -118,6 +118,8 @@ pub struct Event {
     pub id: EventID,
     pub partners: Vec<String>,
     pub round: u64,
+    // UTC millis since Unix Epoch?
+    pub transaction_time: i64,
 }
 
 #[derive(Copy, Clone, Debug, Serialize, Deserialize)]
@@ -143,3 +145,12 @@ impl Date {
     }
 }
 
+impl Registration {
+    /// Returns a date created from the maximum transaction time on any event in the registration.
+    /// If there are no events or the max value cannot be converted, this returns None.
+    pub fn estimate_payment_date(&self) -> Option<NaiveDate> {
+        self.events.iter().map(|e| e.transaction_time).max()
+            .and_then(|t| NaiveDateTime::from_timestamp_millis(t))
+            .map(|d| d.date())
+    }
+}

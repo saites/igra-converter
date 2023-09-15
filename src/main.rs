@@ -35,9 +35,7 @@ use crate::api::ApiError;
 use crate::robin::{
     Address, Association, Contestant, Date, EventID, Payment, Registration,
 };
-use crate::validation::{
-    EntryValidator, PersonRecord, Report, RodeoEvent,
-};
+use crate::validation::{EntryValidator, IGRA_DIVISIONS, PersonRecord, Report, RodeoEvent};
 
 type MyResult<T> = Result<T, Box<dyn Error>>;
 
@@ -50,9 +48,14 @@ async fn main() -> MyResult<()> {
     let personnel_path = args.next().expect("second arg should be the dbf file");
     log::debug!("Personnel File: {personnel_path}");
 
+    // TODO: use a real argument handling crate
     match command.as_str() {
         "gen_db" => {
             do_db_gen(personnel_path)?;
+        }
+        "show" => {
+            let dbt = xbase::try_from_path(personnel_path)?;
+            dbt.print_fields();
         }
         "validate" => {
             let dbt = xbase::try_from_path(personnel_path)?;
@@ -65,9 +68,33 @@ async fn main() -> MyResult<()> {
             let j = serde_json::to_string_pretty(&report)?;
             println!("{j}");
         }
-        "show" => {
+        "read_reg" => {
             let dbt = xbase::try_from_path(personnel_path)?;
-            dbt.print_fields();
+            let registrations = validation::read_registrations(dbt)?;
+
+            for reg in registrations {
+                println!("{reg}");
+            }
+        }
+        "write_reg" => {
+            let reg_path = args.next().ok_or("third arg should be a path to json registration")?;
+            let target_path = args.next().ok_or("fourth arg should be a path to write records")?;
+            
+            // todo: merge with existing db
+            // let events_dbt = xbase::try_from_path(events_path)?;
+            // let registrations = validation::read_registrations(events_dbt)?;
+            
+            let dbt = xbase::try_from_path(personnel_path)?;
+            let people = validation::read_personnel(dbt)?;
+
+            let reg = validation::read_reg(reg_path)?;
+            let report = do_validate(&people, &reg)?;
+
+            let registrations = report.online_to_dbase();
+
+            let tw = xbase::TableWriter::new(
+                BufWriter::new(File::create(target_path)?))?;
+            tw.write_records(&registrations)?;
         }
         "search" => {
             let dbt = xbase::try_from_path(personnel_path)?;
@@ -400,13 +427,14 @@ fn generate_fake_reg(people: &Vec<PersonRecord>, n: usize) -> MyResult<Vec<Regis
         let id = EventID::Known(rid);
 
         // Register each person with their partners.
+        let transaction_time = chrono::Utc::now().timestamp_millis();
         for ((_, ref mut r), partners) in who.into_iter().zip(partner_names) {
             if twice {
-                r.events.push(robin::Event { id, partners: partners.clone(), round: 1 });
-                r.events.push(robin::Event { id, partners, round: 2 });
+                r.events.push(robin::Event { id, partners: partners.clone(), round: 1, transaction_time });
+                r.events.push(robin::Event { id, partners, round: 2, transaction_time });
                 r.payment.total += 6000;
             } else {
-                r.events.push(robin::Event { id, partners, round });
+                r.events.push(robin::Event { id, partners, round, transaction_time });
                 r.payment.total += 3000;
             }
         }
@@ -532,51 +560,31 @@ fn generate_fake_reg(people: &Vec<PersonRecord>, n: usize) -> MyResult<Vec<Regis
 
 
 fn generate_fake_db() -> Result<Vec<PersonRecord>, Box<dyn Error>> {
-    // TODO: ensure these don't exceed field widths
     let first_names: Vec<_> = BufReader::new(
         File::open("./data/common_first_names.txt")?
-    ).lines().filter_map(|r| r.ok()).collect();
+    ).lines().filter_map(|r| r.ok()).filter(|s| s.len() <= 10).collect();
     let last_names: Vec<_> = BufReader::new(
         File::open("./data/common_last_names.txt")?
-    ).lines().filter_map(|r| r.ok()).collect();
+    ).lines().filter_map(|r| r.ok()).filter(|s| s.len() <= 17).collect();
     let cities: Vec<_> = BufReader::new(
         File::open("./data/common_cities.txt")?
-    ).lines().filter_map(|r| r.ok()).collect();
+    ).lines().filter_map(|r| r.ok()).filter(|s| s.len() <= 18).collect();
     let regions: Vec<_> = BufReader::new(
         File::open("./data/common_regions.txt")?
-    ).lines().filter_map(|r| r.ok()).collect();
+    ).lines().filter_map(|r| r.ok()).filter(|s| s.len() <= 2).collect();
+    let associations: Vec<_> = BufReader::new(
+        File::open("./data/associations.txt")?
+    ).lines().filter_map(|r| r.ok()).filter(|s| s.len() <= 5).collect();
+    // These two get built together, so they get truncated below.
+    // The limit is 30.
     let streets: Vec<_> = BufReader::new(
         File::open("./data/common_streets.txt")?
     ).lines().filter_map(|r| r.ok()).collect();
     let street_ends: Vec<_> = BufReader::new(
         File::open("./data/common_street_endings.txt")?
     ).lines().filter_map(|r| r.ok()).collect();
-    let associations: Vec<_> = BufReader::new(
-        File::open("./data/associations.txt")?
-    ).lines().filter_map(|r| r.ok()).collect();
 
     let mut rng = thread_rng();
-
-    fn to_division(association: &str) -> String {
-        match association {
-            "CRGRA" => 1,
-            "DSRA" => 3,
-            "AGRA" => 2,
-            "GSGRA" => 1,
-            "CGRA" => 2,
-            "ASGRA" => 4,
-            "MIGRA" => 4,
-            "NSGRA" => 4,
-            "MGRA" => 3,
-            "NMGRA" => 2,
-            "NGRA" => 1,
-            "GPRA" => 3,
-            "TGRA" => 3,
-            "RRRA" => 3,
-            "UGRA" => 2,
-            _ => 0,
-        }.to_string()
-    }
 
     fn phone(rng: &mut ThreadRng) -> String {
         format!("({area:03}){prefix:03}-{number:04}",
@@ -593,7 +601,15 @@ fn generate_fake_db() -> Result<Vec<PersonRecord>, Box<dyn Error>> {
         let last_name = last_names.choose(&mut rng).unwrap().clone();
         let first_name = first_names.choose(&mut rng).unwrap().clone();
         let association = associations.choose(&mut rng).unwrap().clone();
-        let division = to_division(&association);
+        let division = IGRA_DIVISIONS.get(&association).unwrap_or(&"").to_string();
+
+        let mut address = format!(
+            "{num} {street} {end}",
+            num = rng.gen_range(10..=99999),
+            street = streets.choose(&mut rng).unwrap(),
+            end = street_ends.choose(&mut rng).unwrap(),
+        );
+        address.truncate(30);
 
         let pr = PersonRecord {
             igra_number: format!("{:4}", igra_number),
@@ -618,15 +634,10 @@ fn generate_fake_db() -> Result<Vec<PersonRecord>, Box<dyn Error>> {
             last_updated: "20230706".to_string(),
             sort_date: "20230706".to_string(),
             ext_dollars: Default::default(),
-            address: format!(
-                "{num} {street} {end}",
-                num = rng.gen_range(10..=99999),
-                street = streets.choose(&mut rng).unwrap(),
-                end = street_ends.choose(&mut rng).unwrap(),
-            ),
             city: cities.choose(&mut rng).unwrap().clone(),
             state: regions.choose(&mut rng).unwrap().clone(),
             zip: format!("{:05}", rng.gen_range(10000..=99999)),
+            address,
             association,
             division,
             last_name,
