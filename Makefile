@@ -31,6 +31,7 @@ API_SERVER_PATH = $(RELEASE_BUILD_DIR)/$(PACKAGE_NAME)
 WEB_APP_DIR = $(WEB_DIR)/converter-app
 NODE_MODULES_DIR ?= $(WEB_APP_DIR)/node_modules
 WEB_DIST_DIR = $(WEB_APP_DIR)/dist
+DATAFILES := $(wildcard data/*.txt)
 
 UID := $(shell id -u)
 GID := $(shell id -g)
@@ -93,6 +94,10 @@ WIN32_TARGET = target/i686-pc-windows-gnu/release/converter.exe
 WIN64_BUNDLE ?= bundle-win64.zip
 WIN32_BUNDLE ?= bundle-win32.zip
 define zip-win-bundle =
+rm -r bundle/windows/
+mkdir -p bundle/windows/data/
+cp -r $(WEB_DIST_DIR) bundle/windows/web
+cp $(wordlist 2,$(words $(DATAFILES)),$(DATAFILES)) bundle/windows/data/
 cp $< bundle/windows/converter.exe
 cd bundle/windows && zip -r $@ *
 cp bundle/windows/$@ $@
@@ -105,13 +110,9 @@ target/%/release/converter.exe: $(API_SERVER_SRCS)
 
 bundle-win64: $(WIN64_BUNDLE)
 bundle-win32: $(WIN32_BUNDLE)
-bundle/windows: $(WEB_DIST_DIR) $(wildcard data/*.txt)
-	mkdir -p bundle/windows/data
-	cp -r $(WEB_DIST_DIR) bundle/windows/web
-	cp $(wordlist 2,$(words $^),$^) bundle/windows/data/
-$(WIN64_BUNDLE): $(WIN64_TARGET) bundle/windows
+$(WIN64_BUNDLE): $(WIN64_TARGET) $(WEB_DIST_DIR) 
 	$(zip-win-bundle)
-$(WIN32_BUNDLE): $(WIN32_TARGET) bundle/windows
+$(WIN32_BUNDLE): $(WIN32_TARGET) $(WEB_DIST_DIR) 
 	$(zip-win-bundle)
 
 
