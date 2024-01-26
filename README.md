@@ -13,7 +13,7 @@ Though the program can operate as a command line application,
 it includes an integrated HTTP server for these features,
 and this project includes a web UI to make it easier to use.
 You can see a live version of it (that uses randomly generated data)
-at [https://saites.dev](https://saites.dev).
+on my website at [https://saites.dev/demos/igra/converter/](https://saites.dev/demos/igra/converter/).
 
 
 [^1]: This project and code are NOT officially affiliated with IGRA.
